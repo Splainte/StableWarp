@@ -54,7 +54,7 @@
   </div>
 
 <script>
-  var SW_VERSION = '0.6.0';
+  var SW_VERSION = '0.6.1';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -109,7 +109,7 @@
   function watchTick() {
     if (busy) return;
     evalJSX('SW_watchTick()', function (res) {
-      if (res && res !== 'EvalScript error.') log(res, 'info');
+      if (res && res !== 'EvalScript error.') log(res); // ECHEC en rouge ligne par ligne
     });
   }
 

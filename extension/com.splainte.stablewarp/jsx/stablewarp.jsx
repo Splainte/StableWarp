@@ -217,38 +217,40 @@ function _findStabEffect() {
     return null;
 }
 
-// Pose le Warp sur le clip de la piste la plus haute de la séquence (qui doit être active),
-// et vérifie via le matchName (indépendant de la locale). Renvoie "" si OK, sinon l'erreur.
-function _applyWarpTop(seq) {
+// Pose le Warp sur le clipIdx-ième clip de la piste trackIdx de la séquence (rendue
+// active), vérifié par matchName. Correspondance DOM↔QE : k-ième clip = k-ième item
+// non vide. Renvoie "" si OK, sinon l'erreur.
+function _applyWarpToClipAt(seq, trackIdx, clipIdx) {
     if (!_activate(seq)) return "activation de " + seq.name + " impossible";
     app.enableQE();
     var qeSeq = qe.project.getActiveSequence();
     if (!qeSeq || qeSeq.name !== seq.name) return "séquence " + seq.name + " introuvable côté QE";
     var fx = _findStabEffect();
     if (!fx) return "effet Warp Stabilizer introuvable";
-    for (var t = qeSeq.numVideoTracks - 1; t >= 0; t--) {
-        var track = qeSeq.getVideoTrackAt(t);
-        for (var j = 0; j < track.numItems; j++) {
-            var qeItem = track.getItemAt(j);
-            if (!qeItem || qeItem.type === "Empty") continue;
-            try { qeItem.addVideoEffect(fx); }
-            catch (e) { return "addVideoEffect : " + e; }
-            try {
-                var domClip = seq.videoTracks[t].clips[0];
-                for (var c = 0; c < domClip.components.numItems; c++) {
-                    if (domClip.components[c].matchName === SW_WARP_MATCHNAME) return "";
-                }
-                return "effet posé mais matchName " + SW_WARP_MATCHNAME + " absent (mauvais effet ?)";
-            } catch (eC) { return ""; } // pose OK, vérification impossible : on laisse passer
-        }
+    var qeTrack = qeSeq.getVideoTrackAt(trackIdx);
+    var rank = -1;
+    for (var j = 0; j < qeTrack.numItems; j++) {
+        var qi = qeTrack.getItemAt(j);
+        if (!qi || qi.type === "Empty") continue;
+        rank++;
+        if (rank !== clipIdx) continue;
+        try { qi.addVideoEffect(fx); }
+        catch (e) { return "addVideoEffect : " + e; }
+        try {
+            var domClip = seq.videoTracks[trackIdx].clips[clipIdx];
+            return _hasWarp(domClip) ? "" : "effet posé mais matchName " + SW_WARP_MATCHNAME + " absent (mauvais effet ?)";
+        } catch (eC) { return ""; } // pose OK, vérification impossible : on laisse passer
     }
-    return "aucun clip à stabiliser dans " + seq.name;
+    return "clip " + clipIdx + " introuvable sur la piste V" + (trackIdx + 1) + " côté QE";
 }
 
 // ---------- couverture de la zone stabilisée ----------
 
-// S'assure que la V2 du nest couvre [wantIn, wantOut] (temps source). Étend + relance
-// l'analyse si besoin. Renvoie "" si déjà couvert, un message si étendu, "ECHEC ..." sinon.
+// S'assure que [wantIn, wantOut] (temps source) est couvert par UN segment de la V2.
+// La V2 porte un segment (sous-élément + Warp) PAR extrait utilisé : deux extraits
+// disjoints du même rush = deux analyses séparées, le rush entre les deux est ignoré.
+// Si la plage demandée chevauche un ou plusieurs segments, ils fusionnent ; si elle est
+// disjointe, un nouveau segment est ajouté. "" si déjà couvert, message sinon.
 function _ensureCoverage(stabSeq, wantIn, wantOut) {
     try {
         if (stabSeq.videoTracks.numTracks < 2) return "ECHEC structure inattendue (pas de V2) dans " + stabSeq.name;
@@ -256,40 +258,55 @@ function _ensureCoverage(stabSeq, wantIn, wantOut) {
         var mediaDur = v1.end.seconds;
         wantIn = Math.max(0, wantIn);
         wantOut = Math.min(wantOut, mediaDur);
+        if (wantOut - wantIn <= 0.001) return "ECHEC plage demandée invalide";
         var v2t = stabSeq.videoTracks[1];
-        var covStart = -1, covEnd = -1;
-        if (v2t.clips.numItems > 0) {
-            covStart = v2t.clips[0].start.seconds;
-            covEnd = v2t.clips[0].end.seconds;
-            if (wantIn >= covStart - 0.02 && wantOut <= covEnd + 0.02) return "";
+
+        var EPS = 0.02;
+        var newIn = wantIn, newOut = wantOut;
+        var replaced = []; // zones des segments fusionnés, à supprimer après
+        var merged = false;
+        for (var i = 0; i < v2t.clips.numItems; i++) {
+            var s = v2t.clips[i].start.seconds, e = v2t.clips[i].end.seconds;
+            if (wantIn >= s - EPS && wantOut <= e + EPS) return ""; // déjà couvert par ce segment
+            if (wantIn < e + EPS && wantOut > s - EPS) { // chevauchement → fusion
+                merged = true;
+                if (s < newIn) newIn = s;
+                if (e > newOut) newOut = e;
+                try { replaced.push(v2t.clips[i].projectItem); } catch (eP) {}
+            }
         }
-        var newIn = covStart >= 0 ? Math.min(covStart, wantIn) : wantIn;
-        var newOut = covEnd >= 0 ? Math.max(covEnd, wantOut) : wantOut;
 
         var pi = v1.projectItem;
-        var oldZone = null;
-        if (v2t.clips.numItems > 0) {
-            try { oldZone = v2t.clips[0].projectItem; } catch (eO) {}
-        }
         var sub = _createSubclipRange(pi, stabSeq.name + "_zone", newIn, newOut);
-        if (!sub) return "ECHEC création du sous-élément étendu";
+        if (!sub) return "ECHEC création du sous-élément de segment";
         try { sub.moveBin(_zoneBin()); } catch (eMv) {}
 
         var orig = app.project.activeSequence;
         _activate(stabSeq);
-        // l'union couvre l'ancien clip V2 : l'overwrite le remplace intégralement
-        if (!_overwriteAt(v2t, sub, newIn)) { if (orig) _activate(orig); return "ECHEC pose de la zone étendue"; }
-        var warpErr = _applyWarpTop(stabSeq);
+        // la fusion couvre les segments chevauchés : l'overwrite les remplace intégralement,
+        // les segments disjoints ne sont pas touchés
+        if (!_overwriteAt(v2t, sub, newIn)) { if (orig) _activate(orig); return "ECHEC pose du segment"; }
+
+        var k = -1;
+        for (var i2 = 0; i2 < v2t.clips.numItems; i2++) {
+            if (Math.abs(v2t.clips[i2].start.seconds - newIn) < EPS) { k = i2; break; }
+        }
+        var warpErr = k >= 0 ? _applyWarpToClipAt(stabSeq, 1, k) : "nouveau segment introuvable sur V2";
+
         _closeSequence(stabSeq); // pendant qu'elle est encore active
         if (orig) _activate(orig);
-        // l'ancienne zone n'est plus référencée → suppression (garde-fou : jamais le rush)
-        if (oldZone && oldZone.name.indexOf("_zone") >= 0 && oldZone.nodeId !== pi.nodeId) {
-            _deleteProjectItem(oldZone);
+
+        // les zones fusionnées ne sont plus référencées → suppression (garde-fou : jamais le rush)
+        for (var r = 0; r < replaced.length; r++) {
+            var z = replaced[r];
+            if (z && z.name.indexOf("_zone") >= 0 && z.nodeId !== pi.nodeId) _deleteProjectItem(z);
         }
-        return "zone stabilisée étendue : " + newIn.toFixed(2) + "s → " + newOut.toFixed(2) + "s" +
-            (warpErr ? " MAIS Warp : " + warpErr : ", ré-analyse lancée");
+
+        return (merged ? "segment stabilisé étendu : " : "nouveau segment stabilisé : ") +
+            newIn.toFixed(2) + "s → " + newOut.toFixed(2) + "s" +
+            (warpErr ? " MAIS Warp : " + warpErr : ", analyse lancée");
     } catch (e) {
-        return "ECHEC extension de couverture : " + e;
+        return "ECHEC couverture : " + e;
     }
 }
 
@@ -341,18 +358,22 @@ function _hasWarp(item) {
     return false;
 }
 
-// Composants autres que les intrinsèques (Opacité/Trajectoire/Remappage) et le Warp.
-function _userEffectCount(item) {
-    var intrinsics = { "AE.ADBE Opacity": 1, "PR.ADBE Motion": 1, "AE.ADBE Time Remapping": 1,
-                       "AE.ADBE Audio Levels": 1 };
-    var n = 0;
+// Composants autres que les intrinsèques (Opacité/Trajectoire/Remappage…) et le Warp.
+// Renvoie la liste des matchNames inconnus (vide = rien d'autre que le Warp).
+function _userEffects(item) {
+    var intrinsics = { "AE.ADBE Opacity": 1, "PR.ADBE Motion": 1, "AE.ADBE Motion": 1,
+                       "AE.ADBE Vector Motion": 1, "PR.ADBE Vector Motion": 1,
+                       "AE.ADBE Time Remapping": 1, "AE.ADBE Audio Levels": 1,
+                       "AE.ADBE Sound Levels": 1, "PR.ADBE Audio Channel Mapper": 1,
+                       "PR.ADBE Audio Channel Volume": 1, "PR.ADBE Channel Volume": 1 };
+    var out = [];
     try {
         for (var c = 0; c < item.components.numItems; c++) {
             var mn = item.components[c].matchName;
-            if (!intrinsics[mn] && mn !== SW_WARP_MATCHNAME) n++;
+            if (!intrinsics[mn] && mn !== SW_WARP_MATCHNAME) out.push(mn);
         }
     } catch (e) {}
-    return n;
+    return out;
 }
 
 // Retire le Warp posé directement sur un clip de montage. "" si OK, message sinon.
@@ -360,17 +381,28 @@ function _userEffectCount(item) {
 // 2) QE removeEffects, uniquement si le clip n'a AUCUN autre effet utilisateur
 //    (sémantique incertaine — on ne risque pas un Lumetri) ; sonde sinon.
 function _removeWarpDirect(item, montageSeq) {
+    var compProbe = [];
     try {
         for (var c = 0; c < item.components.numItems; c++) {
             var comp = item.components[c];
             if (comp.matchName !== SW_WARP_MATCHNAME) continue;
-            try { comp.remove(); } catch (e1) {}
+            try { comp.remove(); } catch (e1) {
+                try {
+                    var cms = comp.reflect.methods;
+                    for (var cm = 0; cm < cms.length; cm++) {
+                        if (/remove|delete/i.test(String(cms[cm].name))) compProbe.push(String(cms[cm].name));
+                    }
+                } catch (e1b) {}
+            }
             if (!_hasWarp(item)) return "";
         }
     } catch (e0) {}
 
-    if (_userEffectCount(item) > 0) {
-        return "ECHEC suppression auto du Warp (le clip porte d'autres effets) — supprimer l'effet à la main puis cliquer Stabiliser";
+    var others = _userEffects(item);
+    if (others.length > 0) {
+        return "ECHEC suppression auto du Warp — effets non identifiés sur le clip : " + others.join(", ") +
+            (compProbe.length ? " ; méthodes composant : " + compProbe.join(", ") : "") +
+            " — supprimer l'effet Stabilisation à la main puis cliquer Stabiliser";
     }
     try {
         _activate(montageSeq);
@@ -495,7 +527,7 @@ function _stabilizeOne(item, marges) {
 
         try { app.enableQE(); _removeEmptyTracks(qe.project.getActiveSequence()); } catch (eRm) {}
 
-        var warpErr = _applyWarpTop(stabSeq);
+        var warpErr = _applyWarpToClipAt(stabSeq, 1, 0);
         if (warpErr) return lbl + "ECHEC Warp : " + warpErr;
         _closeSequence(stabSeq); // pendant qu'elle est encore active
     }
@@ -653,8 +685,18 @@ function SW_watchTick(marges) {
                 try { spd = clip.getSpeed(); } catch (eS) {}
                 try { rev = !!clip.isSpeedReversed(); } catch (eRv) {}
                 if ((Math.abs(spd - 1) > 0.0001 || rev) && _hasWarp(clip)) {
-                    msgs.push(clip.name + " : vitesse modifiée après stab directe → migration vers nest…");
-                    msgs.push(_migrateDirectToNest(clip, seq));
+                    // un échec n'est pas retenté en boucle : seulement si la vitesse rechange
+                    if (!$.global._swMigrFail) $.global._swMigrFail = {};
+                    var key = clip.name + "@" + clip.start.seconds.toFixed(2) + "@" + spd + (rev ? "R" : "");
+                    if (!$.global._swMigrFail[key]) {
+                        msgs.push(clip.name + " : vitesse modifiée après stab directe → migration vers nest…");
+                        var mres = _migrateDirectToNest(clip, seq);
+                        msgs.push(mres);
+                        if (mres.indexOf("ECHEC") >= 0) {
+                            $.global._swMigrFail[key] = true;
+                            msgs.push("(pas de nouvelle tentative tant que la vitesse de ce clip ne rechange pas)");
+                        }
+                    }
                 }
             }
         }

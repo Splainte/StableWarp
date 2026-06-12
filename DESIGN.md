@@ -30,8 +30,10 @@ recalcul** et ne produit jamais de bannière.
 - **V1 (dessous)** : le rush entier, sans aucun effet — piste « témoin ». En étirant le clip
   au-delà de la plage stabilisée, on voit l'image non stabilisée plutôt que du noir, ce qui
   permet de viser où l'on étire.
-- **V2 (dessus)** : le clip couvrant uniquement la plage dérushée (in/out utilisés dans la
-  timeline), positionné à son offset source réel, avec le Warp Stabilizer →
+- **V2 (dessus)** : un segment (sous-élément + Warp Stabilizer) PAR extrait du rush utilisé
+  dans le montage, chacun positionné à son offset source réel. Deux extraits disjoints du
+  même rush = deux segments analysés séparément (le rush entre les deux est ignoré) ; des
+  plages qui se chevauchent fusionnent en un segment →
   - l'analyse ne porte que sur la plage utile (ressources maîtrisées) ;
   - les débuts/fins de rush où la caméra part en cacahuète ne polluent pas l'analyse.
 - Caveat mineur : à la frontière V2/V1 il y a un saut visuel (le Warp zoome légèrement l'image),

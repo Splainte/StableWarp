@@ -146,6 +146,33 @@ function _removeEmptyTracks(qeSeq) {
     return "ECHEC — méthodes QESequence candidates : " + (names.length ? names.join(", ") : "réflexion impossible");
 }
 
+// Trouve l'effet Warp Stabilizer quel que soit la langue de Premiere : noms candidats
+// connus, puis balayage de la liste d'effets. La vérification définitive se fait après
+// pose, via le matchName (identifiant interne indépendant de la locale).
+var SW_WARP_MATCHNAME = "AE.ADBE SubspaceStabilizer";
+
+function _findStabEffect(preferredName) {
+    var candidates = [];
+    if (preferredName) candidates.push(preferredName);
+    candidates.push("Stabilisation", "Warp Stabilizer", "Stabilisation de déformation");
+    for (var i = 0; i < candidates.length; i++) {
+        try {
+            var fx = qe.project.getVideoEffectByName(candidates[i]);
+            if (fx) return { fx: fx, name: candidates[i] };
+        } catch (e) {}
+    }
+    var list = qe.project.getVideoEffectList();
+    for (var j = 0; j < list.length; j++) {
+        if (/warp|stabil/i.test(list[j])) {
+            try {
+                var fx2 = qe.project.getVideoEffectByName(list[j]);
+                if (fx2) return { fx: fx2, name: list[j] };
+            } catch (e2) {}
+        }
+    }
+    return null;
+}
+
 // Sous-élément vidéo seul, borné à la plage donnée (essaie Time, ticks, secondes).
 function _createSubclipRange(pi, name, inSec, outSec) {
     var sub = null, note = "";
@@ -334,8 +361,8 @@ function SW_applyWarp(effectName, seqName) {
         if (!qeSeq || qeSeq.name !== seqName) qeSeq = _findQESequence(seqName);
         if (!qeSeq) return "ECHEC séquence \"" + seqName + "\" introuvable côté QE";
 
-        var effect = qe.project.getVideoEffectByName(effectName);
-        if (!effect) return "ECHEC effet \"" + effectName + "\" introuvable (vérifier avec le test 1)";
+        var found = _findStabEffect(effectName);
+        if (!found) return "ECHEC aucun effet de stabilisation trouvé, quel que soit le nom (vérifier avec le test 1)";
 
         // Cibler la piste la plus haute qui contient un clip (V2 = plage dérushée).
         for (var t = qeSeq.numVideoTracks - 1; t >= 0; t--) {
@@ -343,10 +370,24 @@ function SW_applyWarp(effectName, seqName) {
             for (var j = 0; j < track.numItems; j++) {
                 var qeItem = track.getItemAt(j);
                 if (qeItem && qeItem.type !== "Empty") {
-                    var ok = qeItem.addVideoEffect(effect);
-                    return "addVideoEffect(\"" + effectName + "\") sur \"" + qeItem.name +
-                        "\" (piste V" + (t + 1) + ") → " + ok +
-                        "\nLa séquence " + seqName + " est ouverte : l'analyse doit démarrer toute seule, sur la plage dérushée uniquement.";
+                    var ok = qeItem.addVideoEffect(found.fx);
+                    var out = ["addVideoEffect(\"" + found.name + "\") sur \"" + qeItem.name +
+                        "\" (piste V" + (t + 1) + ") → " + ok];
+                    // vérification indépendante de la langue : matchName du composant posé
+                    try {
+                        var domClip = seq.videoTracks[t].clips[0];
+                        var comps = [], isWarp = false;
+                        for (var c = 0; c < domClip.components.numItems; c++) {
+                            var comp = domClip.components[c];
+                            comps.push(comp.displayName + " [" + comp.matchName + "]");
+                            if (comp.matchName === SW_WARP_MATCHNAME) isWarp = true;
+                        }
+                        out.push(isWarp
+                            ? "→ Warp Stabilizer CONFIRMÉ (matchName " + SW_WARP_MATCHNAME + ") ✔"
+                            : "→ ATTENTION matchName " + SW_WARP_MATCHNAME + " absent ! Composants : " + comps.join(" ; "));
+                    } catch (eC) { out.push("vérification matchName impossible : " + eC); }
+                    out.push("La séquence " + seqName + " est ouverte : l'analyse doit démarrer toute seule, sur la plage dérushée uniquement.");
+                    return out.join("\n");
                 }
             }
         }
@@ -370,7 +411,8 @@ function SW_swapSource(seqName) {
     if (!stabPI) return "ECHEC sequence.projectItem est " + stabPI;
 
     var before = [];
-    try { before = [item.getSpeed(), item.inPoint.seconds, item.outPoint.seconds]; } catch (eB) {}
+    try { before = [item.getSpeed(), item.inPoint.seconds, item.outPoint.seconds,
+                    item.start.seconds, item.end.seconds]; } catch (eB) {}
 
     try {
         item.projectItem = stabPI;
@@ -384,10 +426,26 @@ function SW_swapSource(seqName) {
             (before[0] === item.getSpeed() ? " (CONSERVÉE ✔)" : " (PERDUE ✘)"));
         out.push("in avant " + before[1].toFixed(3) + "s → après " + item.inPoint.seconds.toFixed(3) + "s");
         out.push("out avant " + before[2].toFixed(3) + "s → après " + item.outPoint.seconds.toFixed(3) + "s");
+
+        // Premiere remet le in/out à zéro en changeant de source → recalage sur les
+        // valeurs d'origine (le nest mappe 1:1 le temps source, donc mêmes valeurs)
+        if (Math.abs(item.inPoint.seconds - before[1]) > 0.05 ||
+            Math.abs(item.outPoint.seconds - before[2]) > 0.05) {
+            try {
+                item.inPoint = _t(before[1]);
+                item.outPoint = _t(before[2]);
+                out.push("recalage in/out : in " + item.inPoint.seconds.toFixed(3) +
+                    "s / out " + item.outPoint.seconds.toFixed(3) +
+                    "s (attendu " + before[1].toFixed(3) + " / " + before[2].toFixed(3) + ")");
+                out.push("position clip : start " + item.start.seconds.toFixed(3) + "s / end " +
+                    item.end.seconds.toFixed(3) + "s (attendu " + before[3].toFixed(3) + " / " +
+                    before[4].toFixed(3) + " — vérifier qu'il n'a pas bougé)");
+            } catch (eFix) { out.push("ECHEC recalage in/out : " + eFix); }
+        }
     } catch (e2) {
         out.push("lecture post-swap impossible : " + e2);
     }
-    out.push("→ vérifier visuellement que l'image vient bien du nest et que la vitesse joue toujours.");
+    out.push("→ vérifier visuellement : image stabilisée du nest, vitesse conservée, clip pas déplacé.");
     return out.join("\n");
 }
 

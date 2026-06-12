@@ -66,15 +66,47 @@ function _deleteProjectItem(item) {
 }
 
 // Ferme l'onglet de la séquence dans le panneau Montage (l'analyse Warp continue en fond).
+// Comme les autres opérations QE, close() n'est fiable que sur la séquence ACTIVE →
+// à appeler tant que la séquence est active, AVANT de revenir à la séquence de montage.
 function _closeSequence(seq) {
     try {
         app.enableQE();
+        var qeSeq = qe.project.getActiveSequence();
+        if (qeSeq && qeSeq.name === seq.name) {
+            try { qeSeq.close(); return true; } catch (e1) {}
+        }
         for (var i = 0; i < qe.project.numSequences; i++) {
             var qs = qe.project.getSequenceAt(i);
-            if (qs.name === seq.name) { qs.close(); return true; }
+            if (qs.name === seq.name) {
+                try { qs.close(); return true; } catch (e2) {}
+                try { qs.makeCurrent(); qe.project.getActiveSequence().close(); return true; } catch (e3) {}
+            }
         }
     } catch (e) {}
     return false;
+}
+
+// Supprime les sous-éléments _zone dont la séquence _stab n'existe plus.
+function _cleanOrphanZones() {
+    try {
+        var root = app.project.rootItem, binZ = null;
+        for (var i = 0; i < root.children.numItems; i++) {
+            var c = root.children[i];
+            if (c.type === ProjectItemType.BIN && c.name === SW_ZONE_BIN) { binZ = c; break; }
+        }
+        if (!binZ) return "";
+        var msgs = [];
+        // itération à rebours : la suppression décale la collection
+        for (var j = binZ.children.numItems - 1; j >= 0; j--) {
+            var z = binZ.children[j];
+            var m = z.name.match(/^(.*)_zone$/);
+            if (!m) continue;
+            if (!_findSequenceByName(m[1])) {
+                if (_deleteProjectItem(z)) msgs.push("zone orpheline supprimée : " + z.name);
+            }
+        }
+        return msgs.join("\n");
+    } catch (e) { return ""; }
 }
 
 function _activate(seq) {
@@ -242,8 +274,8 @@ function _ensureCoverage(stabSeq, wantIn, wantOut) {
         // l'union couvre l'ancien clip V2 : l'overwrite le remplace intégralement
         if (!_overwriteAt(v2t, sub, newIn)) { if (orig) _activate(orig); return "ECHEC pose de la zone étendue"; }
         var warpErr = _applyWarpTop(stabSeq);
+        _closeSequence(stabSeq); // pendant qu'elle est encore active
         if (orig) _activate(orig);
-        _closeSequence(stabSeq);
         // l'ancienne zone n'est plus référencée → suppression (garde-fou : jamais le rush)
         if (oldZone && oldZone.name.indexOf("_zone") >= 0 && oldZone.nodeId !== pi.nodeId) {
             _deleteProjectItem(oldZone);
@@ -326,8 +358,7 @@ function _stabilizeOne(item, marges) {
 
         var warpErr = _applyWarpTop(stabSeq);
         if (warpErr) return lbl + "ECHEC Warp : " + warpErr;
-        if (!$.global._swToClose) $.global._swToClose = [];
-        $.global._swToClose.push(stabSeq); // fermée en fin de traitement, une fois la séquence de montage réactivée
+        _closeSequence(stabSeq); // pendant qu'elle est encore active
     }
 
     // swap de la source du clip timeline vers le nest, vitesse/position conservées
@@ -358,15 +389,12 @@ function SW_stabilizeSelection(marges) {
     }
     if (items.length === 0) return "ECHEC sélectionne au moins un clip vidéo dans la timeline";
 
-    $.global._swToClose = [];
     var results = [];
     for (var j = 0; j < items.length; j++) {
         try { results.push(_stabilizeOne(items[j], marges)); }
         catch (e) { results.push(items[j].name + " : ECHEC " + e); }
     }
     _activate(seq);
-    for (var k = 0; k < $.global._swToClose.length; k++) _closeSequence($.global._swToClose[k]);
-    $.global._swToClose = [];
     return results.join("\n");
 }
 
@@ -394,6 +422,8 @@ function SW_watchTick(marges) {
                 if (res !== "") msgs.push(clip.name + " : " + res);
             }
         }
+        var orphans = _cleanOrphanZones();
+        if (orphans) msgs.push(orphans);
         return msgs.join("\n");
     } catch (e) {
         return "watcher : " + e;

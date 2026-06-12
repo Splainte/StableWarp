@@ -88,6 +88,13 @@ temps source = in/out × |vitesse|. Conversion appliquée partout.
 - Watcher actif uniquement panneau ouvert (contrainte CEP, comme Sauron).
 - MàJ : vérification GitHub Releases + ouverture du navigateur ; nécessite un repo public
   (ou des releases publiques) et un installeur, comme Sauron — à mettre en place à la 1.0.
+- **Annuler (Ctrl+Z)** : chaque appel API crée sa propre entrée d'historique (~12 par
+  stabilisation) et CEP/ExtendScript n'a AUCUN mécanisme de regroupement. L'API UXP, elle,
+  a des transactions (actions composées = une seule entrée d'annulation) → c'est l'argument
+  décisif pour faire de la **migration UXP le chantier de la 1.0**, d'autant que CEP est
+  coupé fin 2026. À vérifier lors du portage : équivalents UXP de createSubClip,
+  createNewSequenceFromClips, close d'onglet, et pose d'effet par matchName (insertComponent
+  — qui réglerait aussi la question des locales encore plus proprement).
 
 Réglés en v0.2 : les sous-éléments `_zone` vivent dans un chutier racine `_StableWarp`
 (plus dans les chutiers de travail), l'ancienne zone est supprimée à chaque extension

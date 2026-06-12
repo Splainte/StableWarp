@@ -398,14 +398,45 @@ function SW_stabilizeSelection(marges) {
     return results.join("\n");
 }
 
-// Restaure le rush d'origine sur les clips sélectionnés (l'inverse de Stabiliser).
-// Le nest mappe 1:1 le temps source → mêmes in/out, vitesse intacte (le swap ne la touche pas).
+// Une séquence _stab est-elle encore référencée par un clip de montage ?
+function _stabStillUsed(name) {
+    for (var i = 0; i < app.project.sequences.numSequences; i++) {
+        var sq = app.project.sequences[i];
+        if (_isStabName(sq.name)) continue;
+        for (var t = 0; t < sq.videoTracks.numTracks; t++) {
+            var tr = sq.videoTracks[t];
+            for (var c = 0; c < tr.clips.numItems; c++) {
+                try {
+                    if (tr.clips[c].projectItem && tr.clips[c].projectItem.name === name) return true;
+                } catch (e) {}
+            }
+        }
+    }
+    return false;
+}
+
+function _deleteZonesFor(name) {
+    var root = app.project.rootItem;
+    for (var i = 0; i < root.children.numItems; i++) {
+        var c = root.children[i];
+        if (c.type === ProjectItemType.BIN && c.name === SW_ZONE_BIN) {
+            for (var j = c.children.numItems - 1; j >= 0; j--) {
+                if (c.children[j].name === name + "_zone") _deleteProjectItem(c.children[j]);
+            }
+        }
+    }
+}
+
+// Restaure le rush d'origine sur les clips sélectionnés (l'inverse de Stabiliser), puis
+// supprime la séquence _stab et sa _zone si plus rien ne les utilise (chutiers clean —
+// quitte à refaire l'analyse si on re-stabilise plus tard).
 function SW_unstabilizeSelection() {
     if (!app.project) return "ECHEC aucun projet ouvert";
     var seq = app.project.activeSequence;
     if (!seq) return "ECHEC aucune séquence active";
     var sel = seq.getSelection();
     var results = [];
+    var touched = []; // noms des _stab dont on vient de retirer une instance
     for (var i = 0; i < sel.length; i++) {
         var item = sel[i];
         if (item.mediaType !== "Video") continue;
@@ -424,9 +455,27 @@ function SW_unstabilizeSelection() {
             Math.abs(item.outPoint.seconds - before[1]) > 0.05) {
             try { item.inPoint = _t(before[0]); item.outPoint = _t(before[1]); } catch (eFix) {}
         }
-        results.push(lbl + "rush d'origine restauré (" + pi.name + " reste dispo pour re-stabiliser)");
+        results.push(lbl + "rush d'origine restauré");
+        var known = false;
+        for (var k = 0; k < touched.length; k++) { if (touched[k] === pi.name) { known = true; break; } }
+        if (!known) touched.push(pi.name);
     }
     if (results.length === 0) return "ECHEC sélectionne au moins un clip vidéo";
+
+    // ménage : supprimer les nests devenus inutiles (et leurs zones)
+    for (var n = 0; n < touched.length; n++) {
+        var name = touched[n];
+        if (_stabStillUsed(name)) {
+            results.push(name + " conservé (encore utilisé ailleurs dans le montage)");
+            continue;
+        }
+        var s = _findSequenceByName(name);
+        if (s) {
+            _closeSequence(s);
+            if (_deleteProjectItem(s.projectItem)) results.push(name + " supprimé du chutier");
+        }
+        _deleteZonesFor(name);
+    }
     return results.join("\n");
 }
 

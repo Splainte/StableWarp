@@ -32,8 +32,8 @@ Dérouler les boutons **dans l'ordre** et noter/copier la sortie du log à chaqu
 |------|-----------------|------------------|
 | 0 | ExtendScript répond | version Premiere + nom du projet |
 | 1 | Nom exact du Warp Stabilizer (localisé FR ?) | une liste contenant « Stabilisation de déformation » ou similaire → recopier le nom exact dans le champ si différent |
-| 2 | Lecture in/out/vitesse/chutier du clip | vitesse = 50, chutier parent correct |
-| 3 | Création de `<rush>_stab` dans le même chutier, à 2 pistes : V1 = rush entier témoin, V2 = plage dérushée calée au timecode source (risque n°3) | séquence créée au bon endroit, ligne « calage OK » |
+| 2 | Lecture in/out/vitesse/chutier du clip + détection de la durée réelle du média (XMP/métadonnées) | vitesse = 50, chutier parent correct, « durée média » plausible (bloquant pour la suite si introuvable) |
+| 3 | Création de `<rush>_stab` dans le même chutier, à 2 pistes : V1 = rush entier témoin, V2 = sous-élément vidéo `<rush>_stab_zone` borné à la plage dérushée, calé au timecode source (risque n°3) | séquence créée au bon endroit, V1 = durée exacte du rush, ligne « calage V2 OK », « pistes vides supprimées » |
 | 4 | Pose du Warp par script sur la V2 (risque n°1) | `→ true` sur la piste V2, et en ouvrant la séquence `_stab` l'analyse tourne toute seule, sur la plage dérushée uniquement |
 | 5 | Swap de source en conservant la vitesse (risque n°2, plan A) | « vitesse CONSERVÉE ✔ » et l'image de la timeline vient du nest |
 | 6 | QE setSpeed (risque n°2, plan B — seulement si le test 5 échoue) | vitesse lue = 50 après l'appel |

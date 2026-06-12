@@ -38,14 +38,65 @@ function _findSequenceByName(name) {
     return null;
 }
 
-function _fmt(t) {
-    try { return t.seconds.toFixed(3) + "s"; } catch (e) { return String(t); }
-}
-
 function _findQESequence(name) {
     for (var i = 0; i < qe.project.numSequences; i++) {
         if (qe.project.getSequenceAt(i).name === name) return qe.project.getSequenceAt(i);
     }
+    return null;
+}
+
+function _fmt(t) {
+    try { return t.seconds.toFixed(3) + "s"; } catch (e) { return String(t); }
+}
+
+function _t(sec) {
+    var t = new Time();
+    t.seconds = sec;
+    return t;
+}
+
+// Durée réelle du média (setOutPoint ne se clampe PAS à la fin du média — constaté
+// sur Premiere 26 : 999999 s acceptés → séquence de 3 jours).
+function _getMediaDurationSec(pi, log) {
+    // 1) XMP du média : xmpDM:duration (value en frames, scale du type "1/25")
+    try {
+        var xmp = pi.getXMPMetadata();
+        var block = xmp.match(/xmpDM:duration[\s\S]{0,300}/);
+        if (block) {
+            var v = block[0].match(/xmpDM:value[="'\s>]+(\d+)/);
+            var s = block[0].match(/xmpDM:scale[="'\s>]+(\d+)\/(\d+)/);
+            if (v) {
+                var sec = s ? Number(v[1]) * Number(s[1]) / Number(s[2]) : Number(v[1]);
+                if (sec > 0 && sec < 360000) {
+                    log.push("durée média (XMP) : " + sec.toFixed(3) + "s");
+                    return sec;
+                }
+            }
+        }
+    } catch (e1) {}
+    // 2) métadonnées projet : Column.Intrinsic.MediaDuration (ticks ou timecode)
+    try {
+        var pm = pi.getProjectMetadata();
+        var m = pm.match(/Column\.Intrinsic\.MediaDuration[^>]*>([^<]+)</);
+        if (m) {
+            var raw = m[1];
+            var tc = raw.match(/(\d+)[:;](\d+)[:;](\d+)[:;](\d+)/);
+            if (tc) {
+                var fps = 25;
+                try { fps = pi.getFootageInterpretation().frameRate; } catch (eF) {}
+                var sec3 = Number(tc[1]) * 3600 + Number(tc[2]) * 60 + Number(tc[3]) + Number(tc[4]) / fps;
+                log.push("durée média (métadonnées, " + raw + " @ " + fps + " i/s) : " + sec3.toFixed(3) + "s");
+                return sec3;
+            }
+            var digits = raw.replace(/[^\d]/g, "");
+            if (digits.length >= 11) { // ticks Premiere (254016000000 par seconde)
+                var sec2 = Number(digits) / 254016000000;
+                log.push("durée média (métadonnées, ticks) : " + sec2.toFixed(3) + "s");
+                return sec2;
+            }
+            log.push("MediaDuration illisible : " + raw);
+        }
+    } catch (e2) {}
     return null;
 }
 
@@ -54,9 +105,8 @@ function _setPiInOut(pi, inSec, outSec) {
     try { pi.setInPoint(inSec, 4); pi.setOutPoint(outSec, 4); return "OK (secondes)"; }
     catch (e1) {
         try {
-            var ti = new Time(); ti.seconds = inSec;
-            var to = new Time(); to.seconds = outSec;
-            pi.setInPoint(ti, 4); pi.setOutPoint(to, 4); return "OK (Time)";
+            pi.setInPoint(_t(inSec), 4); pi.setOutPoint(_t(outSec), 4);
+            return "OK (Time)";
         } catch (e2) { return "ECHEC (" + e1 + " / " + e2 + ")"; }
     }
 }
@@ -64,9 +114,23 @@ function _setPiInOut(pi, inSec, outSec) {
 function _overwriteAt(track, pi, sec) {
     try { track.overwriteClip(pi, sec); return "OK (secondes)"; }
     catch (e1) {
-        try { var t = new Time(); t.seconds = sec; track.overwriteClip(pi, t); return "OK (Time)"; }
+        try { track.overwriteClip(pi, _t(sec)); return "OK (Time)"; }
         catch (e2) { return "ECHEC (" + e1 + " / " + e2 + ")"; }
     }
+}
+
+// Sous-élément vidéo seul, borné à la plage donnée (essaie Time, ticks, secondes).
+function _createSubclipRange(pi, name, inSec, outSec) {
+    var sub = null, note = "";
+    try { sub = pi.createSubClip(name, _t(inSec), _t(outSec), 0, 1, 0); note = "OK (Time)"; }
+    catch (e1) {
+        try { sub = pi.createSubClip(name, _t(inSec).ticks, _t(outSec).ticks, 0, 1, 0); note = "OK (ticks)"; }
+        catch (e2) {
+            try { sub = pi.createSubClip(name, inSec, outSec, 0, 1, 0); note = "OK (secondes)"; }
+            catch (e3) { note = "ECHEC (" + e1 + " / " + e3 + ")"; }
+        }
+    }
+    return { sub: sub, note: note };
 }
 
 // ---------- test 1 : noms d'effets ----------
@@ -106,35 +170,41 @@ function SW_inspectSelection() {
     try { out.push("inversé : " + item.isSpeedReversed()); } catch (e2) { out.push("inversé : ERREUR " + e2); }
     var bin = _findParentBin(app.project.rootItem, item.projectItem);
     out.push("chutier parent : " + (bin ? bin.name : "NON TROUVÉ"));
+    var dur = _getMediaDurationSec(item.projectItem, out);
+    if (dur === null) out.push("durée média : INTROUVABLE (bloquant pour le test 3)");
     return out.join("\n");
 }
 
 // ---------- test 3 : séquence _stab à 2 pistes dans le bon chutier ----------
 // V1 = rush entier sans effet (piste témoin), V2 = plage dérushée seule (recevra le Warp).
-// Le calage de la V2 se fait via les in/out du projectItem AVANT insertion (écrire les
-// in/out d'un trackItem déjà posé décale le média — constaté sur Premiere 26).
+// V1 : in/out posés sur le projectItem source (0 → durée réelle du média) avant création.
+// V2 : sous-élément vidéo borné à la plage (overwriteClip ignore les in/out source —
+// constaté sur Premiere 26).
 
 function SW_createStabSeq() {
     var item = _getSelectedVideoClip();
     if (!item) return "ECHEC aucun clip vidéo sélectionné";
-    $.global._swItem = item; // la sélection saute quand Premiere bascule sur la nouvelle séquence → référence gardée pour les tests 5/6
+    $.global._swItem = item; // la sélection saute quand Premiere change de séquence → référence gardée pour les tests 5/6
     var origSeq = app.project.activeSequence;
     var pi = item.projectItem;
     var bin = _findParentBin(app.project.rootItem, pi) || app.project.rootItem;
-    var name = pi.name.replace(/\.[^.]+$/, "") + "_stab";
+    var baseName = pi.name.replace(/\.[^.]+$/, "");
+    var name = baseName + "_stab";
 
     if (_findSequenceByName(name)) return "ECHEC la séquence \"" + name + "\" existe déjà (la supprimer pour re-tester)";
 
     var out = [];
 
+    var mediaDur = _getMediaDurationSec(pi, out);
+    if (mediaDur === null) return out.join("\n") + "\nECHEC durée du média introuvable (XMP et métadonnées muets)";
+
     // mémoriser les in/out posés par l'utilisateur dans le moniteur source (restaurés à la fin)
     var savedIn = null, savedOut = null;
     try { savedIn = pi.getInPoint(4).seconds; savedOut = pi.getOutPoint(4).seconds; }
     catch (eS) { try { savedIn = pi.getInPoint().seconds; savedOut = pi.getOutPoint().seconds; } catch (eS2) {} }
-    if (savedIn !== null) out.push("in/out source mémorisés : " + savedIn.toFixed(3) + "s / " + savedOut.toFixed(3) + "s");
 
-    // élargir la source au rush entier pour que la V1 soit complète
-    out.push("élargissement source au rush entier : " + _setPiInOut(pi, 0, 999999));
+    // V1 = rush entier : in/out source posés sur 0 → durée réelle
+    out.push("source posée sur 0 → " + mediaDur.toFixed(3) + "s : " + _setPiInOut(pi, 0, mediaDur));
 
     var seq;
     try {
@@ -151,43 +221,51 @@ function SW_createStabSeq() {
     }
     out.push("séquence créée dans \"" + bin.name + "\"");
 
+    // les opérations QE ciblent la séquence active → s'assurer que c'est la nôtre
+    try { app.project.activeSequence = seq; } catch (eAct) {}
+
     try {
         var v1 = seq.videoTracks[0].clips[0];
-        out.push("V1 : in " + _fmt(v1.inPoint) + " / out " + _fmt(v1.outPoint) + " (doit couvrir le rush entier)");
+        out.push("V1 : in " + _fmt(v1.inPoint) + " / out " + _fmt(v1.outPoint) +
+            " (attendu : 0 → " + mediaDur.toFixed(3) + "s)");
     } catch (eV1) { out.push("lecture V1 impossible : " + eV1); }
 
     // s'assurer qu'une piste V2 existe
     if (seq.videoTracks.numTracks < 2) {
         try {
             app.enableQE();
-            _findQESequence(seq.name).addTracks(1);
+            qe.project.getActiveSequence().addTracks(1);
             out.push("piste V2 ajoutée via QE addTracks → numTracks = " + seq.videoTracks.numTracks);
-        } catch (eT) {
-            out.push("ECHEC ajout piste V2 (QE addTracks) : " + eT);
-        }
+        } catch (eT) { out.push("ECHEC ajout piste V2 (QE addTracks) : " + eT); }
     }
 
-    // caler la source sur la plage dérushée puis poser sur V2 au timecode source
+    // V2 : sous-élément vidéo borné à la plage dérushée, posé au timecode source
     if (seq.videoTracks.numTracks >= 2) {
-        out.push("calage source sur plage dérushée : " + _setPiInOut(pi, item.inPoint.seconds, item.outPoint.seconds));
-        var v2 = seq.videoTracks[1];
-        out.push("pose sur V2 à " + item.inPoint.seconds.toFixed(3) + "s : " + _overwriteAt(v2, pi, item.inPoint.seconds));
-        try {
-            var inner = v2.clips[0];
-            out.push("V2 : start " + _fmt(inner.start) + " / in " + _fmt(inner.inPoint) + " / out " + _fmt(inner.outPoint));
-            var ok = Math.abs(inner.start.seconds - item.inPoint.seconds) < 0.05 &&
-                Math.abs(inner.outPoint.seconds - item.outPoint.seconds) < 0.05;
-            out.push("→ calage V2 " + (ok ? "OK" : "À VÉRIFIER (comparer aux valeurs du test 2)"));
-        } catch (e2) { out.push("lecture V2 impossible : " + e2); }
+        var r = _createSubclipRange(pi, name + "_zone", item.inPoint.seconds, item.outPoint.seconds);
+        out.push("sous-élément " + name + "_zone : " + r.note);
+        if (r.sub) {
+            try { r.sub.moveBin(bin); } catch (eMv) {}
+            var v2 = seq.videoTracks[1];
+            out.push("pose sur V2 à " + item.inPoint.seconds.toFixed(3) + "s : " +
+                _overwriteAt(v2, r.sub, item.inPoint.seconds));
+            try {
+                var inner = v2.clips[0];
+                out.push("V2 : start " + _fmt(inner.start) + " / end " + _fmt(inner.end) +
+                    " (attendu : " + item.inPoint.seconds.toFixed(3) + " → " + item.outPoint.seconds.toFixed(3) + "s)");
+                var ok = Math.abs(inner.start.seconds - item.inPoint.seconds) < 0.05 &&
+                    Math.abs(inner.end.seconds - item.outPoint.seconds) < 0.05;
+                out.push("→ calage V2 " + (ok ? "OK" : "À VÉRIFIER (comparer aux valeurs attendues)"));
+            } catch (e2) { out.push("lecture V2 impossible : " + e2); }
+        }
     }
 
     // restaurer les in/out source de l'utilisateur
     if (savedIn !== null) out.push("restauration in/out source : " + _setPiInOut(pi, savedIn, savedOut));
 
-    // ménage : supprimer les pistes vides (audio en trop notamment)
+    // ménage : supprimer les pistes vides (audio en trop notamment) — sur la séquence ACTIVE
     try {
         app.enableQE();
-        _findQESequence(seq.name).removeEmptyTracks();
+        qe.project.getActiveSequence().removeEmptyTracks();
         out.push("pistes vides supprimées");
     } catch (eR) { out.push("removeEmptyTracks ECHEC : " + eR); }
 
@@ -203,15 +281,20 @@ function SW_createStabSeq() {
 }
 
 // ---------- test 4 : application du Warp via QE dans la séquence _stab ----------
+// QE est fiable sur la séquence ACTIVE → on ouvre la _stab avant d'opérer, et on la
+// laisse ouverte pour voir l'analyse démarrer.
 
 function SW_applyWarp(effectName, seqName) {
     if (!seqName) return "ECHEC nom de séquence vide (lancer le test 3 d'abord)";
+    var seq = _findSequenceByName(seqName);
+    if (!seq) return "ECHEC séquence \"" + seqName + "\" introuvable";
+    try { app.project.activeSequence = seq; }
+    catch (eA) { try { app.project.openSequence(seq.sequenceID); } catch (eA2) {} }
+
     try {
         app.enableQE();
-        var qeSeq = null;
-        for (var i = 0; i < qe.project.numSequences; i++) {
-            if (qe.project.getSequenceAt(i).name === seqName) { qeSeq = qe.project.getSequenceAt(i); break; }
-        }
+        var qeSeq = qe.project.getActiveSequence();
+        if (!qeSeq || qeSeq.name !== seqName) qeSeq = _findQESequence(seqName);
         if (!qeSeq) return "ECHEC séquence \"" + seqName + "\" introuvable côté QE";
 
         var effect = qe.project.getVideoEffectByName(effectName);
@@ -226,8 +309,7 @@ function SW_applyWarp(effectName, seqName) {
                     var ok = qeItem.addVideoEffect(effect);
                     return "addVideoEffect(\"" + effectName + "\") sur \"" + qeItem.name +
                         "\" (piste V" + (t + 1) + ") → " + ok +
-                        "\nOuvrir la séquence " + seqName +
-                        " : l'analyse du Warp doit démarrer toute seule, sur la plage dérushée uniquement.";
+                        "\nLa séquence " + seqName + " est ouverte : l'analyse doit démarrer toute seule, sur la plage dérushée uniquement.";
                 }
             }
         }

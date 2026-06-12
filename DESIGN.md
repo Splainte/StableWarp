@@ -80,13 +80,19 @@ Découverte clé : les in/out d'un trackItem à vitesse modifiée sont exprimés
 par la vitesse (in 9.910 s constaté sur un média de 7.508 s à 50 %) →
 temps source = in/out × |vitesse|. Conversion appliquée partout.
 
-## Limitations v0.1 (à traiter ensuite)
+## Limitations v0.2 (à traiter ensuite)
 
 - Clips en lecture inversée : ignorés (message).
 - Remappage temporel par images clés : non détecté, plage potentiellement fausse.
 - Ré-analyse après extension : le Warp est re-posé à neuf (paramètres personnalisés perdus).
-- Les sous-éléments `_zone` orphelins s'accumulent dans le chutier après extensions.
 - Watcher actif uniquement panneau ouvert (contrainte CEP, comme Sauron).
+- MàJ : vérification GitHub Releases + ouverture du navigateur ; nécessite un repo public
+  (ou des releases publiques) et un installeur, comme Sauron — à mettre en place à la 1.0.
+
+Réglés en v0.2 : les sous-éléments `_zone` vivent dans un chutier racine `_StableWarp`
+(plus dans les chutiers de travail), l'ancienne zone est supprimée à chaque extension
+(déplacement dans un chutier temporaire supprimé avec son contenu), et l'onglet de la
+séquence `_stab` est refermé automatiquement après traitement.
 
 ## Plateforme
 

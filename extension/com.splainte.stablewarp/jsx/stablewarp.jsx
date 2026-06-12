@@ -11,6 +11,7 @@
 
 var SW_WARP_MATCHNAME = "AE.ADBE SubspaceStabilizer";
 var SW_SUFFIX = "_stab";
+var SW_ZONE_BIN = "_StableWarp"; // chutier racine où sont rangés les sous-éléments _zone
 
 // ---------- helpers génériques ----------
 
@@ -42,6 +43,38 @@ function _findSequenceByName(name) {
         if (app.project.sequences[i].name === name) return app.project.sequences[i];
     }
     return null;
+}
+
+function _zoneBin() {
+    var root = app.project.rootItem;
+    for (var i = 0; i < root.children.numItems; i++) {
+        var c = root.children[i];
+        if (c.type === ProjectItemType.BIN && c.name === SW_ZONE_BIN) return c;
+    }
+    try { return root.createBin(SW_ZONE_BIN); } catch (e) { return root; }
+}
+
+// Pas de suppression directe d'un élément dans l'API : on le déplace dans un chutier
+// temporaire qu'on supprime avec son contenu.
+function _deleteProjectItem(item) {
+    try {
+        var tmp = app.project.rootItem.createBin("_sw_tmp");
+        item.moveBin(tmp);
+        tmp.deleteBin();
+        return true;
+    } catch (e) { return false; }
+}
+
+// Ferme l'onglet de la séquence dans le panneau Montage (l'analyse Warp continue en fond).
+function _closeSequence(seq) {
+    try {
+        app.enableQE();
+        for (var i = 0; i < qe.project.numSequences; i++) {
+            var qs = qe.project.getSequenceAt(i);
+            if (qs.name === seq.name) { qs.close(); return true; }
+        }
+    } catch (e) {}
+    return false;
 }
 
 function _activate(seq) {
@@ -196,10 +229,13 @@ function _ensureCoverage(stabSeq, wantIn, wantOut) {
         var newOut = covEnd >= 0 ? Math.max(covEnd, wantOut) : wantOut;
 
         var pi = v1.projectItem;
-        var bin = _findParentBin(app.project.rootItem, stabSeq.projectItem) || app.project.rootItem;
+        var oldZone = null;
+        if (v2t.clips.numItems > 0) {
+            try { oldZone = v2t.clips[0].projectItem; } catch (eO) {}
+        }
         var sub = _createSubclipRange(pi, stabSeq.name + "_zone", newIn, newOut);
         if (!sub) return "ECHEC création du sous-élément étendu";
-        try { sub.moveBin(bin); } catch (eMv) {}
+        try { sub.moveBin(_zoneBin()); } catch (eMv) {}
 
         var orig = app.project.activeSequence;
         _activate(stabSeq);
@@ -207,6 +243,11 @@ function _ensureCoverage(stabSeq, wantIn, wantOut) {
         if (!_overwriteAt(v2t, sub, newIn)) { if (orig) _activate(orig); return "ECHEC pose de la zone étendue"; }
         var warpErr = _applyWarpTop(stabSeq);
         if (orig) _activate(orig);
+        _closeSequence(stabSeq);
+        // l'ancienne zone n'est plus référencée → suppression (garde-fou : jamais le rush)
+        if (oldZone && oldZone.name.indexOf("_zone") >= 0 && oldZone.nodeId !== pi.nodeId) {
+            _deleteProjectItem(oldZone);
+        }
         return "zone stabilisée étendue : " + newIn.toFixed(2) + "s → " + newOut.toFixed(2) + "s" +
             (warpErr ? " MAIS Warp : " + warpErr : ", ré-analyse lancée");
     } catch (e) {
@@ -274,7 +315,7 @@ function _stabilizeOne(item, marges) {
             if (savedIn !== null) _setPiInOut(pi, savedIn, savedOut);
             return lbl + "ECHEC création du sous-élément";
         }
-        try { sub.moveBin(bin); } catch (eMv) {}
+        try { sub.moveBin(_zoneBin()); } catch (eMv) {}
         if (!_overwriteAt(stabSeq.videoTracks[1], sub, srcIn)) {
             if (savedIn !== null) _setPiInOut(pi, savedIn, savedOut);
             return lbl + "ECHEC pose de la zone sur V2";
@@ -285,6 +326,8 @@ function _stabilizeOne(item, marges) {
 
         var warpErr = _applyWarpTop(stabSeq);
         if (warpErr) return lbl + "ECHEC Warp : " + warpErr;
+        if (!$.global._swToClose) $.global._swToClose = [];
+        $.global._swToClose.push(stabSeq); // fermée en fin de traitement, une fois la séquence de montage réactivée
     }
 
     // swap de la source du clip timeline vers le nest, vitesse/position conservées
@@ -315,12 +358,15 @@ function SW_stabilizeSelection(marges) {
     }
     if (items.length === 0) return "ECHEC sélectionne au moins un clip vidéo dans la timeline";
 
+    $.global._swToClose = [];
     var results = [];
     for (var j = 0; j < items.length; j++) {
         try { results.push(_stabilizeOne(items[j], marges)); }
         catch (e) { results.push(items[j].name + " : ECHEC " + e); }
     }
     _activate(seq);
+    for (var k = 0; k < $.global._swToClose.length; k++) _closeSequence($.global._swToClose[k]);
+    $.global._swToClose = [];
     return results.join("\n");
 }
 

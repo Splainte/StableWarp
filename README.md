@@ -21,3 +21,6 @@ Copier `extension/com.splainte.stablewarp` dans `%APPDATA%\Adobe\CEP\extensions\
 3. Ensuite tout est natif : vitesse via clic droit > Vitesse/Durée (zéro recalcul),
    trim libre — si on étire au-delà de la zone stabilisée, l'image non stabilisée (V1)
    s'affiche et la surveillance auto étend la zone + relance l'analyse.
+
+Les sous-éléments techniques (`<rush>_stab_zone`) sont rangés dans un chutier racine
+`_StableWarp` ; les onglets des séquences `_stab` se referment automatiquement.

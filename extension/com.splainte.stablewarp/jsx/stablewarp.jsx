@@ -336,7 +336,8 @@ function _applyWarpDirect(item, montageSeq) {
 
 function _stabilizeOne(item, marges) {
     var lbl = item.name + " : ";
-    try { if (item.isSpeedReversed()) return lbl + "ignoré (lecture inversée non gérée pour l'instant)"; } catch (eR) {}
+    var reversed = false;
+    try { reversed = !!item.isSpeedReversed(); } catch (eR) {}
 
     var pi = item.projectItem;
     if (!pi) return lbl + "ECHEC pas de source";
@@ -350,10 +351,11 @@ function _stabilizeOne(item, marges) {
         return lbl + (ext === "" ? "déjà stabilisé, couverture OK" : ext);
     }
 
-    // vitesse 100 % : pose directe de l'effet, comme à la main — pas de nest
+    // vitesse 100 % non inversée : pose directe de l'effet, comme à la main — pas de nest
+    // (un clip inversé, même à -100 %, est refusé par le Warp natif → nest obligatoire)
     var spd = 1;
     try { spd = item.getSpeed(); } catch (eSp) {}
-    if (Math.abs(spd - 1) < 0.0001) {
+    if (!reversed && Math.abs(spd - 1) < 0.0001) {
         var direct = _applyWarpDirect(item, $.global._swMontageSeq || app.project.activeSequence);
         return lbl + (direct === "" ? "stabilisé directement (vitesse 100 %, analyse en cours)" : direct);
     }
@@ -425,7 +427,8 @@ function _stabilizeOne(item, marges) {
         catch (eFix) { return lbl + "stabilisé MAIS recalage in/out en échec : " + eFix; }
     }
     _refreshTrackItem(item);
-    return lbl + "stabilisé → " + name + " (analyse en cours)";
+    return lbl + "stabilisé → " + name + " (analyse en cours)" +
+        (reversed ? " — clip inversé : vérifier que la zone stabilisée correspond à l'image" : "");
 }
 
 // ---------- API panneau ----------

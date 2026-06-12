@@ -82,8 +82,13 @@ temps source = in/out × |vitesse|. Conversion appliquée partout.
 
 ## Limitations v0.2 (à traiter ensuite)
 
-- Clips en lecture inversée : ignorés (message).
+- Clips en lecture inversée (v0.5) : gérés via le nest (le Warp natif refuse toute lecture
+  inversée, même -100 %, donc pas de pose directe). Hypothèse à valider en test : les in/out
+  d'un trackItem inversé désignent la même plage média qu'à l'endroit (conversion × |vitesse|
+  identique) — si la zone stabilisée tombe à côté, c'est cette hypothèse qu'il faut revoir.
 - Remappage temporel par images clés : non détecté, plage potentiellement fausse.
+- Vitesse changée APRÈS une pose directe à 100 % : bannière rouge native (piste : migration
+  auto direct→nest par le watcher).
 - Ré-analyse après extension : le Warp est re-posé à neuf (paramètres personnalisés perdus).
 - Watcher actif uniquement panneau ouvert (contrainte CEP, comme Sauron).
 - MàJ : vérification GitHub Releases + ouverture du navigateur ; nécessite un repo public

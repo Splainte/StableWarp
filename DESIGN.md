@@ -87,8 +87,12 @@ temps source = in/out × |vitesse|. Conversion appliquée partout.
   d'un trackItem inversé désignent la même plage média qu'à l'endroit (conversion × |vitesse|
   identique) — si la zone stabilisée tombe à côté, c'est cette hypothèse qu'il faut revoir.
 - Remappage temporel par images clés : non détecté, plage potentiellement fausse.
-- Vitesse changée APRÈS une pose directe à 100 % : bannière rouge native (piste : migration
-  auto direct→nest par le watcher).
+- Vitesse changée APRÈS une pose directe à 100 % (v0.6) : le watcher détecte le couple
+  Warp direct + vitesse ≠ 100 % (ou inversée), retire l'effet et refait une stabilisation
+  nest, automatiquement. La suppression d'effet par script est un trou de l'API CEP :
+  `component.remove()` ciblé d'abord, repli QE `removeEffects` UNIQUEMENT si le clip ne
+  porte aucun autre effet utilisateur (on ne risque pas un Lumetri), sinon message
+  demandant une suppression manuelle.
 - Ré-analyse après extension : le Warp est re-posé à neuf (paramètres personnalisés perdus).
 - Watcher actif uniquement panneau ouvert (contrainte CEP, comme Sauron).
 - MàJ : vérification GitHub Releases + ouverture du navigateur ; nécessite un repo public

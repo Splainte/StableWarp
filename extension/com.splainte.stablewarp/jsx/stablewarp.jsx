@@ -332,6 +332,90 @@ function _applyWarpDirect(item, montageSeq) {
     return "ECHEC clip introuvable côté QE";
 }
 
+function _hasWarp(item) {
+    try {
+        for (var c = 0; c < item.components.numItems; c++) {
+            if (item.components[c].matchName === SW_WARP_MATCHNAME) return true;
+        }
+    } catch (e) {}
+    return false;
+}
+
+// Composants autres que les intrinsèques (Opacité/Trajectoire/Remappage) et le Warp.
+function _userEffectCount(item) {
+    var intrinsics = { "AE.ADBE Opacity": 1, "PR.ADBE Motion": 1, "AE.ADBE Time Remapping": 1,
+                       "AE.ADBE Audio Levels": 1 };
+    var n = 0;
+    try {
+        for (var c = 0; c < item.components.numItems; c++) {
+            var mn = item.components[c].matchName;
+            if (!intrinsics[mn] && mn !== SW_WARP_MATCHNAME) n++;
+        }
+    } catch (e) {}
+    return n;
+}
+
+// Retire le Warp posé directement sur un clip de montage. "" si OK, message sinon.
+// 1) component.remove() ciblé (sans risque pour les autres effets) ;
+// 2) QE removeEffects, uniquement si le clip n'a AUCUN autre effet utilisateur
+//    (sémantique incertaine — on ne risque pas un Lumetri) ; sonde sinon.
+function _removeWarpDirect(item, montageSeq) {
+    try {
+        for (var c = 0; c < item.components.numItems; c++) {
+            var comp = item.components[c];
+            if (comp.matchName !== SW_WARP_MATCHNAME) continue;
+            try { comp.remove(); } catch (e1) {}
+            if (!_hasWarp(item)) return "";
+        }
+    } catch (e0) {}
+
+    if (_userEffectCount(item) > 0) {
+        return "ECHEC suppression auto du Warp (le clip porte d'autres effets) — supprimer l'effet à la main puis cliquer Stabiliser";
+    }
+    try {
+        _activate(montageSeq);
+        app.enableQE();
+        var qeSeq = qe.project.getActiveSequence();
+        for (var t = 0; t < montageSeq.videoTracks.numTracks; t++) {
+            var tr = montageSeq.videoTracks[t];
+            for (var k = 0; k < tr.clips.numItems; k++) {
+                var c2 = tr.clips[k];
+                if (c2.name !== item.name || Math.abs(c2.start.seconds - item.start.seconds) > 0.001) continue;
+                var qeTrack = qeSeq.getVideoTrackAt(t);
+                var rank = -1;
+                for (var j = 0; j < qeTrack.numItems; j++) {
+                    var qi = qeTrack.getItemAt(j);
+                    if (!qi || qi.type === "Empty") continue;
+                    rank++;
+                    if (rank !== k) continue;
+                    try { qi.removeEffects(0, 0, true, false, false); } catch (e2) {}
+                    if (!_hasWarp(item)) return "";
+                    try { qi.removeEffects(); } catch (e3) {}
+                    if (!_hasWarp(item)) return "";
+                    var names = [];
+                    try {
+                        var ms = qi.reflect.methods;
+                        for (var m = 0; m < ms.length; m++) {
+                            var n = String(ms[m].name);
+                            if (/remove|effect|component/i.test(n)) names.push(n);
+                        }
+                    } catch (e4) {}
+                    return "ECHEC suppression du Warp — méthodes QE candidates : " + (names.length ? names.join(", ") : "réflexion impossible");
+                }
+            }
+        }
+    } catch (e5) {}
+    return "ECHEC suppression du Warp (clip introuvable côté QE)";
+}
+
+// Cas « stab directe puis vitesse changée » : retire le Warp direct puis refait une
+// stabilisation nest — appelé par le watcher pour une transparence totale.
+function _migrateDirectToNest(item, montageSeq) {
+    var rm = _removeWarpDirect(item, montageSeq);
+    if (rm !== "") return rm;
+    return _stabilizeOne(item, 0);
+}
+
 // ---------- stabilisation d'un clip ----------
 
 function _stabilizeOne(item, marges) {
@@ -547,6 +631,7 @@ function SW_watchTick(marges) {
         if (_isStabName(seq.name)) return ""; // ne pas surveiller l'intérieur d'un nest
         marges = Number(marges) || 0;
 
+        $.global._swMontageSeq = seq;
         var msgs = [];
         for (var t = 0; t < seq.videoTracks.numTracks; t++) {
             var tr = seq.videoTracks[t];
@@ -554,12 +639,23 @@ function SW_watchTick(marges) {
                 var clip = tr.clips[c];
                 var pi = null;
                 try { pi = clip.projectItem; } catch (eP) {}
-                if (!pi || !_isStabName(pi.name)) continue;
-                var stabSeq = _findSequenceByName(pi.name);
-                if (!stabSeq) continue;
-                var rng = _sourceRange(clip);
-                var res = _ensureCoverage(stabSeq, rng.inSec - marges, rng.outSec + marges);
-                if (res !== "") msgs.push(clip.name + " : " + res);
+                if (!pi) continue;
+                if (_isStabName(pi.name)) {
+                    var stabSeq = _findSequenceByName(pi.name);
+                    if (!stabSeq) continue;
+                    var rng = _sourceRange(clip);
+                    var res = _ensureCoverage(stabSeq, rng.inSec - marges, rng.outSec + marges);
+                    if (res !== "") msgs.push(clip.name + " : " + res);
+                    continue;
+                }
+                // stab directe devenue invalide (vitesse changée ou inversée après coup)
+                var spd = 1, rev = false;
+                try { spd = clip.getSpeed(); } catch (eS) {}
+                try { rev = !!clip.isSpeedReversed(); } catch (eRv) {}
+                if ((Math.abs(spd - 1) > 0.0001 || rev) && _hasWarp(clip)) {
+                    msgs.push(clip.name + " : vitesse modifiée après stab directe → migration vers nest…");
+                    msgs.push(_migrateDirectToNest(clip, seq));
+                }
             }
         }
         var orphans = _cleanOrphanZones();

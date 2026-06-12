@@ -398,6 +398,38 @@ function SW_stabilizeSelection(marges) {
     return results.join("\n");
 }
 
+// Restaure le rush d'origine sur les clips sélectionnés (l'inverse de Stabiliser).
+// Le nest mappe 1:1 le temps source → mêmes in/out, vitesse intacte (le swap ne la touche pas).
+function SW_unstabilizeSelection() {
+    if (!app.project) return "ECHEC aucun projet ouvert";
+    var seq = app.project.activeSequence;
+    if (!seq) return "ECHEC aucune séquence active";
+    var sel = seq.getSelection();
+    var results = [];
+    for (var i = 0; i < sel.length; i++) {
+        var item = sel[i];
+        if (item.mediaType !== "Video") continue;
+        var lbl = item.name + " : ";
+        var pi = item.projectItem;
+        if (!pi || !_isStabName(pi.name)) { results.push(lbl + "ignoré (pas stabilisé par StableWarp)"); continue; }
+        var stabSeq = _findSequenceByName(pi.name);
+        if (!stabSeq) { results.push(lbl + "ECHEC séquence " + pi.name + " introuvable"); continue; }
+        var rushPI = null;
+        try { rushPI = stabSeq.videoTracks[0].clips[0].projectItem; } catch (e) {}
+        if (!rushPI) { results.push(lbl + "ECHEC rush d'origine introuvable dans " + pi.name); continue; }
+        var before = [item.inPoint.seconds, item.outPoint.seconds];
+        try { item.projectItem = rushPI; }
+        catch (eSw) { results.push(lbl + "ECHEC swap retour : " + eSw); continue; }
+        if (Math.abs(item.inPoint.seconds - before[0]) > 0.05 ||
+            Math.abs(item.outPoint.seconds - before[1]) > 0.05) {
+            try { item.inPoint = _t(before[0]); item.outPoint = _t(before[1]); } catch (eFix) {}
+        }
+        results.push(lbl + "rush d'origine restauré (" + pi.name + " reste dispo pour re-stabiliser)");
+    }
+    if (results.length === 0) return "ECHEC sélectionne au moins un clip vidéo";
+    return results.join("\n");
+}
+
 // Tick du watcher : étend la couverture des nests _stab dont une instance déborde.
 // Renvoie "" si rien à faire (cas normal, pas de log).
 function SW_watchTick(marges) {

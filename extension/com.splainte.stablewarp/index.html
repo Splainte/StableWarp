@@ -13,6 +13,10 @@
              background:#2d6cdf; color:#fff; border:none; border-radius:6px; cursor:pointer; }
   #stabBtn:hover { background:#3b7af0; }
   #stabBtn:disabled { background:#444; color:#999; cursor:default; }
+  #unstabBtn { display:block; width:100%; margin-top:8px; padding:7px; font-size:11px;
+               background:transparent; color:#999; border:1px solid #4a4a4a;
+               border-radius:6px; cursor:pointer; }
+  #unstabBtn:hover { color:#ddd; border-color:#666; }
   .row { display:flex; align-items:center; gap:8px; margin-top:12px; }
   .row label { color:#aaa; flex:1; }
   input[type="checkbox"] { accent-color:#2d6cdf; }
@@ -34,6 +38,7 @@
   <div class="sub">Stabilisez vos ralentis/accélérés sans prise de tête</div>
 
   <button id="stabBtn" onclick="stabilize()">Stabiliser la sélection</button>
+  <button id="unstabBtn" onclick="unstabilize()">Dé-stabiliser (restaurer le rush d'origine)</button>
 
   <div class="row">
     <label for="watch">Re-stab auto si les in/out bougent (recommandé)</label>
@@ -49,7 +54,7 @@
   </div>
 
 <script>
-  var SW_VERSION = '0.2.1';
+  var SW_VERSION = '0.3.0';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -87,6 +92,16 @@
       log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
       btn.disabled = false;
       btn.textContent = 'Stabiliser la sélection';
+      busy = false;
+    });
+  }
+
+  function unstabilize() {
+    if (busy) return;
+    busy = true;
+    log('▶ Dé-stabilisation de la sélection', 'info');
+    evalJSX('SW_unstabilizeSelection()', function (res) {
+      log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
       busy = false;
     });
   }

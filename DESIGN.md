@@ -101,6 +101,27 @@ Réglés en v0.2 : les sous-éléments `_zone` vivent dans un chutier racine `_S
 (déplacement dans un chutier temporaire supprimé avec son contenu), et l'onglet de la
 séquence `_stab` est refermé automatiquement après traitement.
 
+## Portage UXP — bloqué au 2026-06-12 (API Premiere 26.2)
+
+Enquête complète sur la référence UXP (AdobeDocs/uxp-premiere-pro). Disponible :
+`Project.executeTransaction` (Ctrl+Z groupé ✔), `Project.closeSequence` ✔,
+`ClipProjectItem.getMedia().duration` ✔ (plus besoin de XMP),
+`createSetInOutPointsAction`/`createClearInOutPointsAction` ✔,
+`VideoFilterFactory.createComponent(matchName)` ✔ (locale réglée),
+`SequenceEditor.createOverwriteItemAction`/`createRemoveItemsAction` ✔.
+
+**Manquant — bloquant** : aucune action de vitesse (pas de `createSetSpeedAction`,
+`getSpeed` est en lecture seule) et aucun moyen de remplacer la source d'un trackItem
+(le `trackItem.projectItem =` validé en CEP n'a pas d'équivalent). Sans ça, impossible
+de swapper le clip vers le nest en conservant la vitesse → la fonctionnalité cœur saute.
+Piste Time Remapping (ComponentParam) écartée : vitesse composée illisible pour le monteur.
+
+**Décision** : la 1.0 reste en CEP. Surveiller le changelog UXP
+(developer.adobe.com/premiere-pro/uxp/changelog/) à chaque version de Premiere ;
+porter dès qu'une API de vitesse ou de remplacement de source apparaît.
+En attendant, le Ctrl+Z est compensé par le bouton « Dé-stabiliser la sélection »
+(restaure le rush d'origine en un clic, vitesse/position conservées).
+
 ## Plateforme
 
 CEP est en fin de vie (UXP GA depuis Premiere 25.6, déc. 2025 ; CEP coupé ~fin 2026).

@@ -119,6 +119,33 @@ function _overwriteAt(track, pi, sec) {
     }
 }
 
+// Les in/out d'un trackItem ralenti sont exprimés en temps étiré par la vitesse
+// (constaté : in 9.910s sur un média de 7.508s à 50 %) → conversion vers le temps source.
+function _sourceRange(item) {
+    var spd = 1;
+    try { spd = Math.abs(item.getSpeed()) || 1; } catch (e) {}
+    return { inSec: item.inPoint.seconds * spd, outSec: item.outPoint.seconds * spd, speed: spd };
+}
+
+// removeEmptyTracks n'existe pas sur QESequence en 26.x → essais + sonde des méthodes dispo.
+function _removeEmptyTracks(qeSeq) {
+    try { qeSeq.removeEmptyTracks(); return "OK (removeEmptyTracks)"; } catch (e1) {}
+    try {
+        qeSeq.removeEmptyVideoTracks();
+        qeSeq.removeEmptyAudioTracks();
+        return "OK (removeEmptyVideoTracks + removeEmptyAudioTracks)";
+    } catch (e2) {}
+    var names = [];
+    try {
+        var ms = qeSeq.reflect.methods;
+        for (var i = 0; i < ms.length; i++) {
+            var n = String(ms[i].name);
+            if (n.toLowerCase().indexOf("track") >= 0 || n.toLowerCase().indexOf("remove") >= 0) names.push(n);
+        }
+    } catch (e3) {}
+    return "ECHEC — méthodes QESequence candidates : " + (names.length ? names.join(", ") : "réflexion impossible");
+}
+
 // Sous-élément vidéo seul, borné à la plage donnée (essaie Time, ticks, secondes).
 function _createSubclipRange(pi, name, inSec, outSec) {
     var sub = null, note = "";
@@ -168,6 +195,9 @@ function SW_inspectSelection() {
     out.push("end (séquence) : " + _fmt(item.end));
     try { out.push("vitesse : " + item.getSpeed()); } catch (e) { out.push("vitesse : ERREUR " + e); }
     try { out.push("inversé : " + item.isSpeedReversed()); } catch (e2) { out.push("inversé : ERREUR " + e2); }
+    var rng = _sourceRange(item);
+    out.push("plage source réelle : " + rng.inSec.toFixed(3) + "s → " + rng.outSec.toFixed(3) +
+        "s (in/out × vitesse " + rng.speed + ")");
     var bin = _findParentBin(app.project.rootItem, item.projectItem);
     out.push("chutier parent : " + (bin ? bin.name : "NON TROUVÉ"));
     var dur = _getMediaDurationSec(item.projectItem, out);
@@ -239,23 +269,31 @@ function SW_createStabSeq() {
         } catch (eT) { out.push("ECHEC ajout piste V2 (QE addTracks) : " + eT); }
     }
 
-    // V2 : sous-élément vidéo borné à la plage dérushée, posé au timecode source
+    // V2 : sous-élément vidéo borné à la plage dérushée (en temps SOURCE, pas en temps
+    // étiré par la vitesse), posé au timecode source
     if (seq.videoTracks.numTracks >= 2) {
-        var r = _createSubclipRange(pi, name + "_zone", item.inPoint.seconds, item.outPoint.seconds);
-        out.push("sous-élément " + name + "_zone : " + r.note);
-        if (r.sub) {
-            try { r.sub.moveBin(bin); } catch (eMv) {}
-            var v2 = seq.videoTracks[1];
-            out.push("pose sur V2 à " + item.inPoint.seconds.toFixed(3) + "s : " +
-                _overwriteAt(v2, r.sub, item.inPoint.seconds));
-            try {
-                var inner = v2.clips[0];
-                out.push("V2 : start " + _fmt(inner.start) + " / end " + _fmt(inner.end) +
-                    " (attendu : " + item.inPoint.seconds.toFixed(3) + " → " + item.outPoint.seconds.toFixed(3) + "s)");
-                var ok = Math.abs(inner.start.seconds - item.inPoint.seconds) < 0.05 &&
-                    Math.abs(inner.end.seconds - item.outPoint.seconds) < 0.05;
-                out.push("→ calage V2 " + (ok ? "OK" : "À VÉRIFIER (comparer aux valeurs attendues)"));
-            } catch (e2) { out.push("lecture V2 impossible : " + e2); }
+        var rng = _sourceRange(item);
+        var srcIn = rng.inSec;
+        var srcOut = Math.min(rng.outSec, mediaDur);
+        if (srcIn >= mediaDur) {
+            out.push("ECHEC plage source incohérente : in " + srcIn.toFixed(3) + "s ≥ durée média " + mediaDur.toFixed(3) + "s");
+        } else {
+            out.push("plage source (vitesse " + rng.speed + ") : " + srcIn.toFixed(3) + " → " + srcOut.toFixed(3) + "s");
+            var r = _createSubclipRange(pi, name + "_zone", srcIn, srcOut);
+            out.push("sous-élément " + name + "_zone : " + r.note);
+            if (r.sub) {
+                try { r.sub.moveBin(bin); } catch (eMv) {}
+                var v2 = seq.videoTracks[1];
+                out.push("pose sur V2 à " + srcIn.toFixed(3) + "s : " + _overwriteAt(v2, r.sub, srcIn));
+                try {
+                    var inner = v2.clips[0];
+                    out.push("V2 : start " + _fmt(inner.start) + " / end " + _fmt(inner.end) +
+                        " (attendu : " + srcIn.toFixed(3) + " → " + srcOut.toFixed(3) + "s)");
+                    var ok = Math.abs(inner.start.seconds - srcIn) < 0.05 &&
+                        Math.abs(inner.end.seconds - srcOut) < 0.05;
+                    out.push("→ calage V2 " + (ok ? "OK" : "À VÉRIFIER (comparer aux valeurs attendues)"));
+                } catch (e2) { out.push("lecture V2 impossible : " + e2); }
+            }
         }
     }
 
@@ -265,9 +303,8 @@ function SW_createStabSeq() {
     // ménage : supprimer les pistes vides (audio en trop notamment) — sur la séquence ACTIVE
     try {
         app.enableQE();
-        qe.project.getActiveSequence().removeEmptyTracks();
-        out.push("pistes vides supprimées");
-    } catch (eR) { out.push("removeEmptyTracks ECHEC : " + eR); }
+        out.push("suppression des pistes vides : " + _removeEmptyTracks(qe.project.getActiveSequence()));
+    } catch (eR) { out.push("suppression des pistes vides ECHEC : " + eR); }
 
     // revenir à la séquence de montage
     try { app.project.activeSequence = origSeq; }

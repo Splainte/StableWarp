@@ -293,6 +293,45 @@ function _ensureCoverage(stabSeq, wantIn, wantOut) {
     }
 }
 
+// Pose le Warp directement sur un clip de montage à vitesse 100 % (pas besoin de nest).
+// Correspondance DOM↔QE : le k-ième clip DOM d'une piste = le k-ième item non vide QE.
+function _applyWarpDirect(item, montageSeq) {
+    try {
+        for (var c0 = 0; c0 < item.components.numItems; c0++) {
+            if (item.components[c0].matchName === SW_WARP_MATCHNAME) return "déjà stabilisé (Warp présent)";
+        }
+    } catch (e0) {}
+    _activate(montageSeq);
+    app.enableQE();
+    var qeSeq = qe.project.getActiveSequence();
+    if (!qeSeq) return "ECHEC séquence introuvable côté QE";
+    var fx = _findStabEffect();
+    if (!fx) return "ECHEC effet Warp Stabilizer introuvable";
+    for (var t = 0; t < montageSeq.videoTracks.numTracks; t++) {
+        var tr = montageSeq.videoTracks[t];
+        for (var k = 0; k < tr.clips.numItems; k++) {
+            var c2 = tr.clips[k];
+            if (c2.name !== item.name || Math.abs(c2.start.seconds - item.start.seconds) > 0.001) continue;
+            var qeTrack = qeSeq.getVideoTrackAt(t);
+            var rank = -1;
+            for (var j = 0; j < qeTrack.numItems; j++) {
+                var qi = qeTrack.getItemAt(j);
+                if (!qi || qi.type === "Empty") continue;
+                rank++;
+                if (rank !== k) continue;
+                try { qi.addVideoEffect(fx); } catch (eA) { return "ECHEC addVideoEffect : " + eA; }
+                try {
+                    for (var v = 0; v < item.components.numItems; v++) {
+                        if (item.components[v].matchName === SW_WARP_MATCHNAME) return "";
+                    }
+                    return "effet posé mais matchName non vérifié (mauvais effet ?)";
+                } catch (eV) { return ""; }
+            }
+        }
+    }
+    return "ECHEC clip introuvable côté QE";
+}
+
 // ---------- stabilisation d'un clip ----------
 
 function _stabilizeOne(item, marges) {
@@ -309,6 +348,14 @@ function _stabilizeOne(item, marges) {
         var rng0 = _sourceRange(item);
         var ext = _ensureCoverage(stabSeq0, rng0.inSec - marges, rng0.outSec + marges);
         return lbl + (ext === "" ? "déjà stabilisé, couverture OK" : ext);
+    }
+
+    // vitesse 100 % : pose directe de l'effet, comme à la main — pas de nest
+    var spd = 1;
+    try { spd = item.getSpeed(); } catch (eSp) {}
+    if (Math.abs(spd - 1) < 0.0001) {
+        var direct = _applyWarpDirect(item, $.global._swMontageSeq || app.project.activeSequence);
+        return lbl + (direct === "" ? "stabilisé directement (vitesse 100 %, analyse en cours)" : direct);
     }
 
     var bin = _findParentBin(app.project.rootItem, pi) || app.project.rootItem;
@@ -396,6 +443,7 @@ function SW_stabilizeSelection(marges) {
     }
     if (items.length === 0) return "ECHEC sélectionne au moins un clip vidéo dans la timeline";
 
+    $.global._swMontageSeq = seq;
     var results = [];
     for (var j = 0; j < items.length; j++) {
         try { results.push(_stabilizeOne(items[j], marges)); }

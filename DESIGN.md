@@ -67,14 +67,26 @@ nests `_stab` dont le in/out déborde de la plage couverte par le clip intérieu
 Limitation assumée : le watcher ne tourne que si le panneau est ouvert (même contrainte que
 Sauron). Panneau fermé → la partie étendue reste non stabilisée (image V1) jusqu'à réouverture.
 
-## Risques techniques (à valider par le spike)
+## Risques techniques — tous VALIDÉS par le spike (Premiere 26.2.2, 2026-06-12)
 
-| # | Point | Plan A | Plan B |
-|---|-------|--------|--------|
-| 1 | Poser le Warp par script | QE DOM `addVideoEffect` (non documenté mais éprouvé) | matchName `AE.ADBE SubspaceStabilizer` via UXP `insertComponent` |
-| 2 | Swap source en gardant vitesse/in/out | réassignation `trackItem.projectItem` | QE `setSpeed` (douteux) ; sinon message « réapplique ta vitesse » à la création |
-| 3 | Construire le nest 2 pistes (V2 + trim) par script | `track.overwriteClip` + `trackItem.inPoint/outPoint/start` writables (API ≥ v13) ; piste V2 via QE `addTracks` si absente | recréer la séquence |
-| 4 | Nom d'effet localisé FR | découverte via `getVideoEffectList()` | — |
+| # | Point | Solution validée |
+|---|-------|------------------|
+| 1 | Poser le Warp par script | QE DOM `addVideoEffect` sur la séquence ACTIVE, vérifié par matchName `AE.ADBE SubspaceStabilizer` |
+| 2 | Swap source en gardant vitesse/in/out | `trackItem.projectItem =` conserve la vitesse et la position ; remet le in/out à zéro → réécriture des valeurs d'origine après coup |
+| 3 | Construire le nest 2 pistes | V1 : in/out source posés sur 0 → durée réelle (lue via XMP, `setOutPoint` ne se clampe pas) ; V2 : sous-élément borné `createSubClip` (vidéo seule) car `overwriteClip` ignore les in/out source ; QE `addTracks`/`removeEmptyVideo+AudioTracks` |
+| 4 | Nom d'effet localisé | noms candidats FR/EN + balayage + vérification post-pose par matchName (indépendant de la locale) |
+
+Découverte clé : les in/out d'un trackItem à vitesse modifiée sont exprimés en **temps étiré**
+par la vitesse (in 9.910 s constaté sur un média de 7.508 s à 50 %) →
+temps source = in/out × |vitesse|. Conversion appliquée partout.
+
+## Limitations v0.1 (à traiter ensuite)
+
+- Clips en lecture inversée : ignorés (message).
+- Remappage temporel par images clés : non détecté, plage potentiellement fausse.
+- Ré-analyse après extension : le Warp est re-posé à neuf (paramètres personnalisés perdus).
+- Les sous-éléments `_zone` orphelins s'accumulent dans le chutier après extensions.
+- Watcher actif uniquement panneau ouvert (contrainte CEP, comme Sauron).
 
 ## Plateforme
 

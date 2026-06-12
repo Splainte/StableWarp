@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>StableWarp</title>
+<style>
+  body { background:#232323; color:#d6d6d6; font:12px/1.5 -apple-system, "Segoe UI", sans-serif;
+         margin:0; padding:14px; }
+  h1 { font-size:15px; margin:0; color:#fff; }
+  .sub { color:#888; margin:2px 0 14px; font-size:11px; }
+  #stabBtn { display:block; width:100%; padding:12px; font-size:14px; font-weight:bold;
+             background:#2d6cdf; color:#fff; border:none; border-radius:6px; cursor:pointer; }
+  #stabBtn:hover { background:#3b7af0; }
+  #stabBtn:disabled { background:#444; color:#999; cursor:default; }
+  .row { display:flex; align-items:center; gap:8px; margin-top:12px; }
+  .row label { color:#aaa; flex:1; }
+  input[type="number"] { width:60px; padding:4px; background:#1b1b1b; color:#e8e8e8;
+                         border:1px solid #4a4a4a; border-radius:4px; }
+  input[type="checkbox"] { accent-color:#2d6cdf; }
+  #watchState { font-size:11px; color:#6da56d; }
+  #watchState.off { color:#a05c5c; }
+  #log { background:#1b1b1b; border:1px solid #3a3a3a; border-radius:4px; padding:8px;
+         margin-top:14px; height:160px; overflow-y:auto; white-space:pre-wrap;
+         font-family:Consolas, Menlo, monospace; font-size:11px; }
+  .ok { color:#7fd17f; } .err { color:#ff8a8a; } .info { color:#7cb8ff; } .dim { color:#777; }
+</style>
+</head>
+<body>
+  <h1>StableWarp</h1>
+  <div class="sub">Stabilisation + vitesse modifiée, sans imbrication manuelle</div>
+
+  <button id="stabBtn" onclick="stabilize()">Stabiliser la sélection</button>
+
+  <div class="row">
+    <label for="marges">Marges autour de la plage (secondes)</label>
+    <input id="marges" type="number" min="0" step="0.5" value="0">
+  </div>
+
+  <div class="row">
+    <label for="watch">Surveillance auto des in/out</label>
+    <input id="watch" type="checkbox" checked onchange="updateWatcher()">
+    <span id="watchState">active</span>
+  </div>
+
+  <div id="log"></div>
+
+<script>
+  var logEl = document.getElementById('log');
+  var watchTimer = null;
+  var busy = false;
+
+  function log(msg, cls) {
+    if (!msg) return;
+    var lines = String(msg).split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = document.createElement('div');
+      line.className = cls || (lines[i].indexOf('ECHEC') >= 0 ? 'err' : 'ok');
+      line.textContent = lines[i];
+      logEl.appendChild(line);
+    }
+    while (logEl.childNodes.length > 300) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function evalJSX(call, cb) {
+    window.__adobe_cep__.evalScript(call, cb);
+  }
+
+  function marges() {
+    return Number(document.getElementById('marges').value) || 0;
+  }
+
+  function stabilize() {
+    if (busy) return;
+    busy = true;
+    var btn = document.getElementById('stabBtn');
+    btn.disabled = true;
+    btn.textContent = 'Stabilisation…';
+    log('▶ Stabilisation de la sélection', 'info');
+    evalJSX('SW_stabilizeSelection(' + marges() + ')', function (res) {
+      log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
+      btn.disabled = false;
+      btn.textContent = 'Stabiliser la sélection';
+      busy = false;
+    });
+  }
+
+  function watchTick() {
+    if (busy) return;
+    evalJSX('SW_watchTick(' + marges() + ')', function (res) {
+      if (res && res !== 'EvalScript error.') log(res, 'info');
+    });
+  }
+
+  function updateWatcher() {
+    var on = document.getElementById('watch').checked;
+    var state = document.getElementById('watchState');
+    if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+    if (on) {
+      watchTimer = setInterval(watchTick, 2500);
+      state.textContent = 'active';
+      state.className = '';
+    } else {
+      state.textContent = 'coupée';
+      state.className = 'off';
+    }
+  }
+
+  evalJSX('SW_env()', function (res) { log(res, 'dim'); });
+  updateWatcher();
+</script>
+</body>
+</html>

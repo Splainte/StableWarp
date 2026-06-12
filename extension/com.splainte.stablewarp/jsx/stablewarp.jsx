@@ -164,6 +164,12 @@ function _setPiInOut(pi, inSec, outSec) {
     }
 }
 
+// Après un swap de source, Premiere peut laisser le clip noir jusqu'à un
+// désactiver/réactiver — on automatise ce rafraîchissement (invisible).
+function _refreshTrackItem(item) {
+    try { item.disabled = true; item.disabled = false; } catch (e) {}
+}
+
 function _overwriteAt(track, pi, sec) {
     try { track.overwriteClip(pi, sec); return true; }
     catch (e1) {
@@ -371,6 +377,7 @@ function _stabilizeOne(item, marges) {
         try { item.inPoint = _t(before[1]); item.outPoint = _t(before[2]); }
         catch (eFix) { return lbl + "stabilisé MAIS recalage in/out en échec : " + eFix; }
     }
+    _refreshTrackItem(item);
     return lbl + "stabilisé → " + name + " (analyse en cours)";
 }
 
@@ -455,6 +462,7 @@ function SW_unstabilizeSelection() {
             Math.abs(item.outPoint.seconds - before[1]) > 0.05) {
             try { item.inPoint = _t(before[0]); item.outPoint = _t(before[1]); } catch (eFix) {}
         }
+        _refreshTrackItem(item);
         results.push(lbl + "rush d'origine restauré");
         var known = false;
         for (var k = 0; k < touched.length; k++) { if (touched[k] === pi.name) { known = true; break; } }

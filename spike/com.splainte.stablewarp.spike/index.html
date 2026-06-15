@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>StableWarp Spike</title>
+<style>
+  body { background:#232323; color:#d6d6d6; font:12px/1.5 -apple-system, "Segoe UI", sans-serif;
+         margin:0; padding:12px; }
+  h1 { font-size:14px; margin:0 0 4px; color:#fff; }
+  .sub { color:#888; margin-bottom:12px; }
+  button { display:block; width:100%; margin:6px 0; padding:8px 10px; text-align:left;
+           background:#3a3a3a; color:#e8e8e8; border:1px solid #4a4a4a; border-radius:4px;
+           cursor:pointer; font-size:12px; }
+  button:hover { background:#454545; }
+  button .num { color:#7cb8ff; font-weight:bold; margin-right:6px; }
+  label { display:block; margin-top:10px; color:#999; }
+  input { width:100%; box-sizing:border-box; padding:6px; background:#1b1b1b; color:#e8e8e8;
+          border:1px solid #4a4a4a; border-radius:4px; margin:4px 0; }
+  #log { background:#1b1b1b; border:1px solid #3a3a3a; border-radius:4px; padding:8px;
+         margin-top:12px; height:180px; overflow-y:auto; white-space:pre-wrap;
+         font-family:Consolas, Menlo, monospace; font-size:11px; }
+  .ok { color:#7fd17f; } .err { color:#ff8a8a; } .info { color:#7cb8ff; }
+</style>
+</head>
+<body>
+  <h1>StableWarp Spike</h1>
+  <div class="sub">Validation API — dérouler les tests dans l'ordre, sur un clip sélectionné dans la timeline.</div>
+
+  <button onclick="run('SW_ping')"><span class="num">0</span>Ping ExtendScript</button>
+  <button onclick="run('SW_listStabEffects')"><span class="num">1</span>Lister les effets de stabilisation (QE)</button>
+  <button onclick="run('SW_inspectSelection')"><span class="num">2</span>Inspecter le clip sélectionné</button>
+  <button onclick="run('SW_createStabSeq')"><span class="num">3</span>Créer la séquence _stab (chutier + trim)</button>
+  <button onclick="runApplyWarp()"><span class="num">4</span>Appliquer le Warp dans la séquence _stab</button>
+  <button onclick="runSwap()"><span class="num">5</span>Swap source du clip → _stab (test vitesse)</button>
+  <button onclick="run('SW_qeSetSpeed', [50])"><span class="num">6</span>QE setSpeed 50 % sur le clip sélectionné</button>
+
+  <label>Nom de l'effet (ajuster d'après le test 1) :</label>
+  <input id="effectName" value="Stabilisation">
+  <label>Nom de la séquence _stab (auto-rempli par le test 3) :</label>
+  <input id="stabSeqName" value="">
+
+  <div id="log"></div>
+
+<script>
+  var logEl = document.getElementById('log');
+
+  function log(msg, cls) {
+    var line = document.createElement('div');
+    if (cls) line.className = cls;
+    line.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function run(fn, args) {
+    var call = fn + '(' + (args || []).map(function (a) { return JSON.stringify(a); }).join(',') + ')';
+    log('▶ ' + call, 'info');
+    window.__adobe_cep__.evalScript(call, function (res) {
+      var isErr = typeof res === 'string' && (res.indexOf('ECHEC') === 0 || res === 'EvalScript error.');
+      log(res, isErr ? 'err' : 'ok');
+      // le test 3 renvoie le nom de la séquence créée sur la dernière ligne "SEQ=<nom>"
+      var m = typeof res === 'string' && res.match(/SEQ=(.+)$/m);
+      if (m) document.getElementById('stabSeqName').value = m[1];
+    });
+  }
+
+  function runApplyWarp() {
+    run('SW_applyWarp', [document.getElementById('effectName').value,
+                         document.getElementById('stabSeqName').value]);
+  }
+
+  function runSwap() {
+    run('SW_swapSource', [document.getElementById('stabSeqName').value]);
+  }
+</script>
+</body>
+</html>

@@ -54,7 +54,7 @@
   </div>
 
 <script>
-  var SW_VERSION = '0.6.1';
+  var SW_VERSION = '1.0.0';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -148,7 +148,11 @@
           var rel = JSON.parse(xhr.responseText);
           var tag = (rel.tag_name || '').replace(/^v/, '');
           if (tag && newerThan(tag, SW_VERSION)) {
-            updateUrl = (rel.assets && rel.assets.length) ? rel.assets[0].browser_download_url : rel.html_url;
+            var assets = rel.assets || [];
+            updateUrl = rel.html_url;
+            for (var i = 0; i < assets.length; i++) {
+              if (/setup.*\.exe$/i.test(assets[i].name)) { updateUrl = assets[i].browser_download_url; break; }
+            }
             var btn = document.getElementById('updateBtn');
             btn.textContent = 'Mise à jour v' + tag + ' disponible';
             btn.style.display = 'inline-block';
@@ -159,9 +163,49 @@
     } catch (e) {}
   }
 
+  // suit les redirections (GitHub Releases → S3) puis écrit le fichier sur disque
+  function httpsDownload(url, dest, cb) {
+    var https = require('https');
+    var fs = require('fs');
+    https.get(url, { headers: { 'User-Agent': 'StableWarp' } }, function (res) {
+      if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+        return httpsDownload(res.headers.location, dest, cb);
+      }
+      if (res.statusCode !== 200) { cb('HTTP ' + res.statusCode); return; }
+      var out = fs.createWriteStream(dest);
+      res.pipe(out);
+      out.on('finish', function () { out.close(function () { cb(null); }); });
+      out.on('error', function (e) { cb(String(e)); });
+    }).on('error', function (e) { cb(String(e)); });
+  }
+
+  // télécharge l'installeur et le lance (Windows), ou relance le script d'install (macOS)
   function openUpdate() {
-    if (updateUrl && window.cep && window.cep.util) {
-      window.cep.util.openURLInDefaultBrowser(updateUrl);
+    var btn = document.getElementById('updateBtn');
+    btn.disabled = true;
+    try {
+      var os = require('os'), path = require('path'), cp = require('child_process');
+      if (process.platform === 'win32') {
+        if (!updateUrl) { btn.disabled = false; return; }
+        var dest = path.join(os.tmpdir(), 'StableWarp-Setup.exe');
+        log('Téléchargement de l’installeur…', 'info');
+        httpsDownload(updateUrl, dest, function (err) {
+          if (err) { log('ECHEC téléchargement : ' + err); btn.disabled = false; return; }
+          cp.spawn(dest, [], { detached: true, stdio: 'ignore' }).unref();
+          log('Installeur lancé : suis l’assistant, puis redémarre Premiere.', 'info');
+        });
+      } else {
+        var sh = path.join(os.tmpdir(), 'stablewarp-install.sh');
+        log('Téléchargement du programme d’installation…', 'info');
+        httpsDownload('https://raw.githubusercontent.com/' + SW_REPO + '/main/install/install-macos.sh', sh, function (err) {
+          if (err) { log('ECHEC téléchargement : ' + err); btn.disabled = false; return; }
+          cp.spawn('/bin/bash', [sh], { detached: true, stdio: 'ignore' }).unref();
+          log('Mise à jour en cours — patiente, puis redémarre Premiere.', 'info');
+        });
+      }
+    } catch (e) {
+      log('ECHEC mise à jour : ' + e);
+      btn.disabled = false;
     }
   }
 

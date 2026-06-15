@@ -1,3 +1,6 @@
 .DS_Store
 Thumbs.db
 .claude/
+
+# Sortie de compilation Inno Setup
+installer/Output/

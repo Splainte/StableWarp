@@ -1,9 +1,9 @@
 <?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <ExtensionManifest Version="7.0" ExtensionBundleId="com.splainte.stablewarp.panel"
-                   ExtensionBundleVersion="0.6.1" ExtensionBundleName="StableWarp"
+                   ExtensionBundleVersion="1.0.0" ExtensionBundleName="StableWarp"
                    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <ExtensionList>
-    <Extension Id="com.splainte.stablewarp.panel" Version="0.6.1"/>
+    <Extension Id="com.splainte.stablewarp.panel" Version="1.0.0"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -22,6 +22,10 @@
         <Resources>
           <MainPath>./index.html</MainPath>
           <ScriptPath>./jsx/stablewarp.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
         </Resources>
         <Lifecycle>
           <AutoVisible>true</AutoVisible>

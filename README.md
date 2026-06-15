@@ -4,9 +4,6 @@ Extension Adobe Premiere Pro : appliquer la Stabilisation de déformation (Warp 
 sur des clips à vitesse modifiée, sans imbrication manuelle — retiming et retrim libres,
 sans recalcul ni bannière à l'export.
 
-Voir [DESIGN.md](DESIGN.md) pour l'architecture (« nest inversé » à deux pistes) et
-[spike/README.md](spike/README.md) pour le panneau de validation API (terminé, 4/4 validés).
-
 ## Installation (dev)
 
 Copier `extension/com.splainte.stablewarp` dans `%APPDATA%\Adobe\CEP\extensions\`

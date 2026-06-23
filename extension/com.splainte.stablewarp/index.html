@@ -20,8 +20,8 @@
   .row { display:flex; align-items:center; gap:8px; margin-top:12px; }
   .row label { color:#aaa; flex:1; }
   input[type="checkbox"] { accent-color:#2d6cdf; }
-  #watchState { font-size:11px; color:#6da56d; }
-  #watchState.off { color:#a05c5c; }
+  .state { font-size:11px; color:#6da56d; }
+  .state.off { color:#a05c5c; }
   #log { background:#1b1b1b; border:1px solid #3a3a3a; border-radius:4px; padding:8px;
          margin-top:14px; flex:1; min-height:100px; overflow-y:auto; white-space:pre-wrap;
          font-family:Consolas, Menlo, monospace; font-size:11px; }
@@ -46,13 +46,13 @@
   <div class="row">
     <label for="watch">Re-stab auto si les in/out bougent (recommandé)</label>
     <input id="watch" type="checkbox" checked onchange="updateWatcher()">
-    <span id="watchState">active</span>
+    <span id="watchState" class="state">active</span>
   </div>
 
   <div class="row">
     <label for="banner">Détecteur de bandeau bleu — relance l'analyse (recommandé)</label>
     <input id="banner" type="checkbox" checked onchange="updateWatcher()">
-    <span id="bannerState">active</span>
+    <span id="bannerState" class="state">active</span>
   </div>
 
   <div id="log"></div>
@@ -63,7 +63,7 @@
   </div>
 
 <script>
-  var SW_VERSION = '1.0.0';
+  var SW_VERSION = '1.1.0';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -129,7 +129,7 @@
   function _setState(id, on) {
     var el = document.getElementById(id);
     el.textContent = on ? 'active' : 'coupée';
-    el.className = on ? '' : 'off';
+    el.className = on ? 'state' : 'state off';
   }
 
   function updateWatcher() {

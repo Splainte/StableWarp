@@ -863,11 +863,22 @@ function SW_diagWarp() {
             if (pi && _isStabName(pi.name)) {
                 var ss = _findSequenceByName(pi.name);
                 if (!ss || ss.videoTracks.numTracks < 2) { out.push("  nest sans V2"); continue; }
+                // (1) lecture PASSIVE (nest non activé)
                 var v2 = ss.videoTracks[1];
                 for (var k = 0; k < v2.clips.numItems; k++) {
                     var w = _warpComp(v2.clips[k]);
-                    if (w) { out.push("  segment V2 #" + k + " → VERDICT : " + _verdict(w)); out.push(_dumpWarpComp(w, "    ")); }
+                    if (w) out.push("  seg #" + k + " PASSIF → " + _verdict(w));
                 }
+                // (2) lecture APRÈS ACTIVATION du nest
+                var orig = app.project.activeSequence;
+                _activate(ss);
+                var v2b = ss.videoTracks[1];
+                for (var k2 = 0; k2 < v2b.clips.numItems; k2++) {
+                    var w2 = _warpComp(v2b.clips[k2]);
+                    if (w2) { out.push("  seg #" + k2 + " ACTIF → " + _verdict(w2)); out.push(_dumpWarpComp(w2, "    ")); }
+                }
+                _closeSequence(ss);
+                if (orig) _activate(orig);
             } else {
                 var wc = _warpComp(clip);
                 if (wc) { out.push("  VERDICT : " + _verdict(wc)); out.push(_dumpWarpComp(wc, "  ")); }

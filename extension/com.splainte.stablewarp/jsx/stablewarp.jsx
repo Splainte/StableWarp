@@ -842,6 +842,11 @@ function _dumpWarpComp(comp, indent) {
     return s;
 }
 
+function _verdict(comp) {
+    return (_warpAnalyzed(comp) ? "ANALYSÉ (rien à faire)" : "NON ANALYSÉ → bandeau bleu") +
+        " [counter=" + _warpCounter(comp) + "]";
+}
+
 function SW_diagWarp() {
     try {
         if (!app.project) return "ECHEC aucun projet";
@@ -861,11 +866,12 @@ function SW_diagWarp() {
                 var v2 = ss.videoTracks[1];
                 for (var k = 0; k < v2.clips.numItems; k++) {
                     var w = _warpComp(v2.clips[k]);
-                    if (w) { out.push("  segment V2 #" + k); out.push(_dumpWarpComp(w, "    ")); }
+                    if (w) { out.push("  segment V2 #" + k + " → VERDICT : " + _verdict(w)); out.push(_dumpWarpComp(w, "    ")); }
                 }
             } else {
                 var wc = _warpComp(clip);
-                out.push(wc ? _dumpWarpComp(wc, "  ") : "  aucun Warp direct");
+                if (wc) { out.push("  VERDICT : " + _verdict(wc)); out.push(_dumpWarpComp(wc, "  ")); }
+                else out.push("  aucun Warp direct");
             }
         }
         return out.length ? out.join("\n") : "aucun clip vidéo sélectionné";
@@ -874,8 +880,7 @@ function SW_diagWarp() {
 
 // ---------- helpers de détection de l'état d'analyse du Warp ----------
 
-// Le Warp du clip (ou null). Détection de l'état d'analyse via la propriété #0
-// (booléen sans nom) : true = analysé, false = bandeau bleu « Cliquez sur Analyser ».
+// Le Warp du clip (ou null).
 function _warpComp(item) {
     try {
         for (var c = 0; c < item.components.numItems; c++) {
@@ -884,9 +889,22 @@ function _warpComp(item) {
     } catch (e) {}
     return null;
 }
+
+// État d'analyse, signal PERSISTANT après réouverture : l'analyse calcule une
+// « échelle auto » qui s'affiche dans le NOM de la propriété, ex. « Echelle auto
+// (103,7 %) ». Pas d'analyse = pas de pourcentage (bandeau « Cliquez sur Analyser »).
+// On matche le motif « nombre % » (et pas le libellé FR) → indépendant de la langue.
+// (prop[0] testé d'abord : non fiable, faux positifs massifs sur projet rouvert.)
 function _warpAnalyzed(comp) {
-    try { return comp.properties[0].getValue() === true; }
-    catch (e) { return true; } // illisible → on considère analysé pour ne rien casser
+    try {
+        var props = comp.properties;
+        for (var p = 0; p < props.numItems; p++) {
+            var nm = "";
+            try { nm = String(props[p].displayName); } catch (e1) {}
+            if (/\d[\d.,]*\s*%/.test(nm)) return true;
+        }
+        return false;
+    } catch (e) { return true; } // illisible → considéré analysé, on ne touche à rien
 }
 // Compteur d'analyse (figé = bloqué/jamais lancé, en hausse = analyse en cours).
 function _warpCounter(comp) {

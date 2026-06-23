@@ -659,26 +659,25 @@ function SW_unstabilizeSelection() {
 var SW_BANNER_MAX_TRIES = 2;
 
 // Décide, pour un Warp NON analysé, s'il faut relancer son analyse maintenant.
-// Garde-fou : on ne relance que si le compteur d'analyse est FIGÉ d'un tick à
-// l'autre (sinon une analyse est déjà en cours, on n'y touche pas) et tant
-// qu'on n'a pas épuisé le quota de tentatives. Retourne :
-//   "init"/"analyzing"/"wait" → ne rien faire ; "due" → relancer ;
-//   "giveup-now" → abandon (logguer une fois) ; "gaveup" → silencieux.
-function _bannerDecide(key, comp) {
+// Pas de garde-fou « analyse en cours » nécessaire : une analyse qui tourne est
+// déjà vue comme analysée par _warpAnalyzed (p1==false), donc on n'arrive ici que
+// sur un VRAI bandeau bloqué. On confirme quand même sur 2 ticks consécutifs (anti
+// état transitoire) et on plafonne le nombre de relances. Retourne :
+//   "wait" → patienter ; "due" → relancer ; "giveup-now" → abandon (logguer une
+//   fois) ; "gaveup" → silencieux.
+function _bannerDecide(key) {
     if (!$.global._swBanner) $.global._swBanner = {};
     var st = $.global._swBanner[key];
-    var c = _warpCounter(comp);
-    if (!st) { $.global._swBanner[key] = { counter: c, frozen: 0, tries: 0, gaveUp: false }; return "init"; }
+    if (!st) { $.global._swBanner[key] = { seen: 1, tries: 0, gaveUp: false }; return "wait"; }
     if (st.gaveUp) return "gaveup";
-    if (c !== st.counter) { st.counter = c; st.frozen = 0; return "analyzing"; } // compteur bouge = en cours
-    st.frozen++;
-    if (st.frozen < 1) return "wait";
+    st.seen++;
+    if (st.seen < 2) return "wait"; // vu non analysé sur 2 ticks consécutifs
     if (st.tries >= SW_BANNER_MAX_TRIES) { st.gaveUp = true; return "giveup-now"; }
     return "due";
 }
 function _bannerDidRelaunch(key) {
     var st = $.global._swBanner[key];
-    if (st) { st.tries++; st.frozen = 0; }
+    if (st) { st.tries++; st.seen = 0; } // laisse 2 ticks à la relance avant de réessayer
 }
 function _bannerClear(key, seen) {
     seen[key] = 1;
@@ -751,7 +750,7 @@ function SW_watchTick(restab, banner) {
                     var bkey = "D:" + t + ":" + clip.name + "@" + clip.start.seconds.toFixed(2);
                     if (_warpAnalyzed(wc)) { _bannerClear(bkey, seen); continue; }
                     seen[bkey] = 1;
-                    var d = _bannerDecide(bkey, wc);
+                    var d = _bannerDecide(bkey);
                     if (d === "due") {
                         var rm = _removeWarpDirect(clip, seq);
                         var add = (rm === "") ? _applyWarpDirect(clip, seq) : rm;
@@ -795,7 +794,7 @@ function _bannerScanNest(stabSeq, seen, msgs) {
             var bkey = "N:" + stabSeq.name + "#" + k;
             if (_warpAnalyzed(w)) { _bannerClear(bkey, seen); continue; }
             seen[bkey] = 1;
-            var d = _bannerDecide(bkey, w);
+            var d = _bannerDecide(bkey);
             if (d === "due") due.push({ idx: k, key: bkey });
             else if (d === "giveup-now")
                 msgs.push(stabSeq.name + " #" + k + " : analyse impossible à relancer — laissé tel quel");
@@ -819,68 +818,6 @@ function SW_env() {
     return "Premiere " + app.version + " — " + (app.project ? app.project.name : "aucun projet");
 }
 
-// ---------- SONDE TEMPORAIRE : diagnostic état d'analyse Warp (à retirer) ----------
-// Dump complet des propriétés du Warp, pour trouver un signal « analysé / bandeau
-// bleu » qui PERSISTE après réouverture du projet.
-
-function _dumpWarpComp(comp, indent) {
-    var s = indent + "WARP " + comp.matchName;
-    try { s += " (\"" + comp.displayName + "\")"; } catch (eD) {}
-    try {
-        var props = comp.properties;
-        s += " — " + props.numItems + " propriété(s)";
-        for (var p = 0; p < props.numItems; p++) {
-            var pr = props[p];
-            var nm = "?"; try { nm = pr.displayName; } catch (e1) {}
-            var val = "?";
-            try { val = String(pr.getValue()); }
-            catch (e2) { val = "<getValue KO: " + e2 + ">"; }
-            if (val.length > 80) val = val.substring(0, 80) + "…(" + val.length + " car.)";
-            s += "\n" + indent + "  [" + p + "] " + nm + " = " + val;
-        }
-    } catch (eP) { s += "\n" + indent + "  <properties inaccessibles: " + eP + ">"; }
-    return s;
-}
-
-function _verdict(comp) {
-    var p0 = "?", p1 = "?";
-    try { p0 = String(comp.properties[0].getValue()); } catch (e0) {}
-    try { p1 = String(comp.properties[1].getValue()); } catch (e1) {}
-    return (_warpAnalyzed(comp) ? "ANALYSÉ (rien à faire)" : "NON ANALYSÉ → bandeau bleu") +
-        " [p0=" + p0 + " p1=" + p1 + " counter=" + _warpCounter(comp) + "]";
-}
-
-function SW_diagWarp() {
-    try {
-        if (!app.project) return "ECHEC aucun projet";
-        var seq = app.project.activeSequence;
-        if (!seq) return "ECHEC aucune séquence active";
-        var sel = seq.getSelection();
-        if (!sel || !sel.length) return "ECHEC sélectionne au moins un clip";
-        var out = [];
-        for (var i = 0; i < sel.length; i++) {
-            var clip = sel[i];
-            if (clip.mediaType !== "Video") continue;
-            out.push("══ CLIP: " + clip.name);
-            var pi = null; try { pi = clip.projectItem; } catch (eP0) {}
-            if (pi && _isStabName(pi.name)) {
-                var ss = _findSequenceByName(pi.name);
-                if (!ss || ss.videoTracks.numTracks < 2) { out.push("  nest sans V2"); continue; }
-                var v2 = ss.videoTracks[1];
-                for (var k = 0; k < v2.clips.numItems; k++) {
-                    var w = _warpComp(v2.clips[k]);
-                    if (w) out.push("  seg #" + k + " → VERDICT : " + _verdict(w));
-                }
-            } else {
-                var wc = _warpComp(clip);
-                if (wc) out.push("  VERDICT : " + _verdict(wc));
-                else out.push("  aucun Warp direct");
-            }
-        }
-        return out.length ? out.join("\n") : "aucun clip vidéo sélectionné";
-    } catch (e) { return "diag : " + e; }
-}
-
 // ---------- helpers de détection de l'état d'analyse du Warp ----------
 
 // Le Warp du clip (ou null).
@@ -896,10 +833,12 @@ function _warpComp(item) {
 // État d'analyse — LECTURE PASSIVE FIABLE (pas besoin d'activer le nest).
 // On lit deux booléens en tête de la liste de propriétés du Warp :
 //   [0] = true  → données d'analyse présentes EN SESSION (faux après réouverture) ;
-//   [1] = false → état analysé PERSISTANT après réouverture (true = bandeau bleu).
-// Analysé ⟺ [0]==true OU [1]==false. Le NOM « Echelle auto (x %) » est volontairement
-// ignoré : c'est la seule donnée qui a besoin d'être « hydratée », donc le seul signal
-// qui ment dans un nest fermé (dans les deux sens). Les VALEURS, elles, sont fiables.
+//   [1] = false → analyse faite OU EN COURS (true = vraie analyse en attente = bandeau).
+// Analysé ⟺ [0]==true OU [1]==false. Conséquence clé : une analyse qui tourne a
+// [1]==false → vue comme « analysée » → jamais relancée (pas de garde-fou compteur
+// nécessaire ; le compteur reste de toute façon figé pendant l'analyse). Le NOM
+// « Echelle auto (x %) » est ignoré : c'est la seule donnée à « hydrater », donc la
+// seule qui ment dans un nest fermé. Les VALEURS, elles, sont fiables.
 function _warpAnalyzed(comp) {
     try {
         var props = comp.properties;
@@ -907,11 +846,6 @@ function _warpAnalyzed(comp) {
         var p1 = props[1].getValue();
         return (p0 === true) || (p1 === false);
     } catch (e) { return true; } // illisible → considéré analysé, on ne touche à rien
-}
-// Compteur d'analyse (figé = bloqué/jamais lancé, en hausse = analyse en cours).
-function _warpCounter(comp) {
-    try { return Number(comp.properties[comp.properties.numItems - 1].getValue()); }
-    catch (e) { return -1; }
 }
 
 // Relance l'analyse d'un segment V2 d'un nest : retire le Warp (segment = Warp seul)

@@ -50,10 +50,12 @@
   </div>
 
   <div class="row">
-    <label for="banner">Détecteur de bandeau bleu — relance l'analyse (recommandé)</label>
-    <input id="banner" type="checkbox" checked onchange="updateWatcher()">
-    <span id="bannerState">active</span>
+    <label for="banner">Détecteur de bandeau bleu — relance l'analyse (EN TEST, laisser décoché)</label>
+    <input id="banner" type="checkbox" onchange="updateWatcher()">
+    <span id="bannerState" class="off">coupée</span>
   </div>
+
+  <button id="diagBtn" onclick="diagWarp()" style="display:block;width:100%;margin-top:8px;padding:7px;font-size:11px;background:#3a2d4a;color:#cdbbe0;border:1px solid #5a4a6a;border-radius:6px;cursor:pointer;">🔍 SONDE : diag Warp (clip sélectionné)</button>
 
   <div id="log"></div>
 
@@ -113,6 +115,13 @@
     evalJSX('SW_unstabilizeSelection()', function (res) {
       log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
       busy = false;
+    });
+  }
+
+  function diagWarp() {
+    log('▶ SONDE diag Warp', 'info');
+    evalJSX('SW_diagWarp()', function (res) {
+      log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res, 'dim');
     });
   }
 

@@ -819,6 +819,59 @@ function SW_env() {
     return "Premiere " + app.version + " — " + (app.project ? app.project.name : "aucun projet");
 }
 
+// ---------- SONDE TEMPORAIRE : diagnostic état d'analyse Warp (à retirer) ----------
+// Dump complet des propriétés du Warp, pour trouver un signal « analysé / bandeau
+// bleu » qui PERSISTE après réouverture du projet.
+
+function _dumpWarpComp(comp, indent) {
+    var s = indent + "WARP " + comp.matchName;
+    try { s += " (\"" + comp.displayName + "\")"; } catch (eD) {}
+    try {
+        var props = comp.properties;
+        s += " — " + props.numItems + " propriété(s)";
+        for (var p = 0; p < props.numItems; p++) {
+            var pr = props[p];
+            var nm = "?"; try { nm = pr.displayName; } catch (e1) {}
+            var val = "?";
+            try { val = String(pr.getValue()); }
+            catch (e2) { val = "<getValue KO: " + e2 + ">"; }
+            if (val.length > 80) val = val.substring(0, 80) + "…(" + val.length + " car.)";
+            s += "\n" + indent + "  [" + p + "] " + nm + " = " + val;
+        }
+    } catch (eP) { s += "\n" + indent + "  <properties inaccessibles: " + eP + ">"; }
+    return s;
+}
+
+function SW_diagWarp() {
+    try {
+        if (!app.project) return "ECHEC aucun projet";
+        var seq = app.project.activeSequence;
+        if (!seq) return "ECHEC aucune séquence active";
+        var sel = seq.getSelection();
+        if (!sel || !sel.length) return "ECHEC sélectionne au moins un clip";
+        var out = [];
+        for (var i = 0; i < sel.length; i++) {
+            var clip = sel[i];
+            if (clip.mediaType !== "Video") continue;
+            out.push("══ CLIP: " + clip.name);
+            var pi = null; try { pi = clip.projectItem; } catch (eP0) {}
+            if (pi && _isStabName(pi.name)) {
+                var ss = _findSequenceByName(pi.name);
+                if (!ss || ss.videoTracks.numTracks < 2) { out.push("  nest sans V2"); continue; }
+                var v2 = ss.videoTracks[1];
+                for (var k = 0; k < v2.clips.numItems; k++) {
+                    var w = _warpComp(v2.clips[k]);
+                    if (w) { out.push("  segment V2 #" + k); out.push(_dumpWarpComp(w, "    ")); }
+                }
+            } else {
+                var wc = _warpComp(clip);
+                out.push(wc ? _dumpWarpComp(wc, "  ") : "  aucun Warp direct");
+            }
+        }
+        return out.length ? out.join("\n") : "aucun clip vidéo sélectionné";
+    } catch (e) { return "diag : " + e; }
+}
+
 // ---------- helpers de détection de l'état d'analyse du Warp ----------
 
 // Le Warp du clip (ou null). Détection de l'état d'analyse via la propriété #0

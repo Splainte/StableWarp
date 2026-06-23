@@ -843,8 +843,11 @@ function _dumpWarpComp(comp, indent) {
 }
 
 function _verdict(comp) {
+    var p0 = "?", p1 = "?";
+    try { p0 = String(comp.properties[0].getValue()); } catch (e0) {}
+    try { p1 = String(comp.properties[1].getValue()); } catch (e1) {}
     return (_warpAnalyzed(comp) ? "ANALYSÉ (rien à faire)" : "NON ANALYSÉ → bandeau bleu") +
-        " [counter=" + _warpCounter(comp) + "]";
+        " [p0=" + p0 + " p1=" + p1 + " counter=" + _warpCounter(comp) + "]";
 }
 
 function SW_diagWarp() {
@@ -863,25 +866,14 @@ function SW_diagWarp() {
             if (pi && _isStabName(pi.name)) {
                 var ss = _findSequenceByName(pi.name);
                 if (!ss || ss.videoTracks.numTracks < 2) { out.push("  nest sans V2"); continue; }
-                // (1) lecture PASSIVE (nest non activé)
                 var v2 = ss.videoTracks[1];
                 for (var k = 0; k < v2.clips.numItems; k++) {
                     var w = _warpComp(v2.clips[k]);
-                    if (w) out.push("  seg #" + k + " PASSIF → " + _verdict(w));
+                    if (w) out.push("  seg #" + k + " → VERDICT : " + _verdict(w));
                 }
-                // (2) lecture APRÈS ACTIVATION du nest
-                var orig = app.project.activeSequence;
-                _activate(ss);
-                var v2b = ss.videoTracks[1];
-                for (var k2 = 0; k2 < v2b.clips.numItems; k2++) {
-                    var w2 = _warpComp(v2b.clips[k2]);
-                    if (w2) { out.push("  seg #" + k2 + " ACTIF → " + _verdict(w2)); out.push(_dumpWarpComp(w2, "    ")); }
-                }
-                _closeSequence(ss);
-                if (orig) _activate(orig);
             } else {
                 var wc = _warpComp(clip);
-                if (wc) { out.push("  VERDICT : " + _verdict(wc)); out.push(_dumpWarpComp(wc, "  ")); }
+                if (wc) out.push("  VERDICT : " + _verdict(wc));
                 else out.push("  aucun Warp direct");
             }
         }
@@ -901,20 +893,19 @@ function _warpComp(item) {
     return null;
 }
 
-// État d'analyse, signal PERSISTANT après réouverture : l'analyse calcule une
-// « échelle auto » qui s'affiche dans le NOM de la propriété, ex. « Echelle auto
-// (103,7 %) ». Pas d'analyse = pas de pourcentage (bandeau « Cliquez sur Analyser »).
-// On matche le motif « nombre % » (et pas le libellé FR) → indépendant de la langue.
-// (prop[0] testé d'abord : non fiable, faux positifs massifs sur projet rouvert.)
+// État d'analyse — LECTURE PASSIVE FIABLE (pas besoin d'activer le nest).
+// On lit deux booléens en tête de la liste de propriétés du Warp :
+//   [0] = true  → données d'analyse présentes EN SESSION (faux après réouverture) ;
+//   [1] = false → état analysé PERSISTANT après réouverture (true = bandeau bleu).
+// Analysé ⟺ [0]==true OU [1]==false. Le NOM « Echelle auto (x %) » est volontairement
+// ignoré : c'est la seule donnée qui a besoin d'être « hydratée », donc le seul signal
+// qui ment dans un nest fermé (dans les deux sens). Les VALEURS, elles, sont fiables.
 function _warpAnalyzed(comp) {
     try {
         var props = comp.properties;
-        for (var p = 0; p < props.numItems; p++) {
-            var nm = "";
-            try { nm = String(props[p].displayName); } catch (e1) {}
-            if (/\d[\d.,]*\s*%/.test(nm)) return true;
-        }
-        return false;
+        var p0 = props[0].getValue();
+        var p1 = props[1].getValue();
+        return (p0 === true) || (p1 === false);
     } catch (e) { return true; } // illisible → considéré analysé, on ne touche à rien
 }
 // Compteur d'analyse (figé = bloqué/jamais lancé, en hausse = analyse en cours).

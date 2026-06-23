@@ -711,3 +711,85 @@ function SW_watchTick(marges) {
 function SW_env() {
     return "Premiere " + app.version + " — " + (app.project ? app.project.name : "aucun projet");
 }
+
+// ---------- SONDE TEMPORAIRE : détection « bandeau bleu » (à retirer) ----------
+// Dump des composants Warp du/des clips sélectionnés, pour repérer une propriété
+// qui distingue un Warp analysé d'un Warp « Cliquez sur Analyser » (non analysé).
+
+function _dumpWarpComp(comp, indent) {
+    var s = indent + "WARP " + comp.matchName;
+    try { s += " (\"" + comp.displayName + "\")"; } catch (eD) {}
+    try {
+        var props = comp.properties;
+        s += " — " + props.numItems + " propriété(s)";
+        for (var p = 0; p < props.numItems; p++) {
+            var pr = props[p];
+            var nm = "?"; try { nm = pr.displayName; } catch (e1) {}
+            var val = "?";
+            try { val = String(pr.getValue()); }
+            catch (e2) { val = "<getValue KO: " + e2 + ">"; }
+            if (val.length > 80) val = val.substring(0, 80) + "…(" + val.length + " car.)";
+            var extra = "";
+            try { extra += pr.isTimeVarying() ? " [kf]" : ""; } catch (e3) {}
+            s += "\n" + indent + "  - " + nm + " = " + val + extra;
+        }
+    } catch (eP) { s += "\n" + indent + "  <properties inaccessibles: " + eP + ">"; }
+    // méthodes du composant (au cas où l'état d'analyse passe par une méthode)
+    try {
+        var ms = comp.reflect.methods, mlist = [];
+        for (var m = 0; m < ms.length; m++) {
+            var n = String(ms[m].name);
+            if (/anal|warp|stab|status|state|data|done|complete/i.test(n)) mlist.push(n);
+        }
+        if (mlist.length) s += "\n" + indent + "  méthodes intéressantes: " + mlist.join(", ");
+    } catch (eM) {}
+    return s;
+}
+
+function SW_diagWarp() {
+    try {
+        if (!app.project) return "ECHEC aucun projet";
+        var seq = app.project.activeSequence;
+        if (!seq) return "ECHEC aucune séquence active";
+        var sel = seq.getSelection();
+        if (!sel || !sel.length) return "ECHEC sélectionne au moins un clip (avec ou sans bandeau bleu)";
+
+        var out = [];
+        for (var i = 0; i < sel.length; i++) {
+            var clip = sel[i];
+            if (clip.mediaType !== "Video") continue;
+            out.push("══ CLIP: " + clip.name);
+            var pi = null; try { pi = clip.projectItem; } catch (eP0) {}
+
+            if (pi && _isStabName(pi.name)) {
+                var ss = _findSequenceByName(pi.name);
+                if (!ss) { out.push("  nest " + pi.name + " introuvable"); continue; }
+                out.push("  (nest " + ss.name + ")");
+                if (ss.videoTracks.numTracks < 2) { out.push("  pas de V2"); continue; }
+                var v2 = ss.videoTracks[1];
+                var found = false;
+                for (var k = 0; k < v2.clips.numItems; k++) {
+                    var seg = v2.clips[k];
+                    for (var c = 0; c < seg.components.numItems; c++) {
+                        if (seg.components[c].matchName === SW_WARP_MATCHNAME) {
+                            out.push("  segment V2 #" + k + " (" + seg.name + ")");
+                            out.push(_dumpWarpComp(seg.components[c], "    "));
+                            found = true;
+                        }
+                    }
+                }
+                if (!found) out.push("  aucun Warp trouvé sur la V2");
+            } else {
+                var found2 = false;
+                for (var c2 = 0; c2 < clip.components.numItems; c2++) {
+                    if (clip.components[c2].matchName === SW_WARP_MATCHNAME) {
+                        out.push(_dumpWarpComp(clip.components[c2], "  "));
+                        found2 = true;
+                    }
+                }
+                if (!found2) out.push("  aucun Warp direct sur ce clip");
+            }
+        }
+        return out.length ? out.join("\n") : "aucun clip vidéo dans la sélection";
+    } catch (e) { return "diag : " + e; }
+}

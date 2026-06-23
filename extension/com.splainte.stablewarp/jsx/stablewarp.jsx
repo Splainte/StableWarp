@@ -746,6 +746,103 @@ function _dumpWarpComp(comp, indent) {
     return s;
 }
 
+// Le Warp du clip (ou null). Détection de l'état d'analyse via la propriété #0
+// (booléen sans nom) : true = analysé, false = bandeau bleu « Cliquez sur Analyser ».
+function _warpComp(item) {
+    try {
+        for (var c = 0; c < item.components.numItems; c++) {
+            if (item.components[c].matchName === SW_WARP_MATCHNAME) return item.components[c];
+        }
+    } catch (e) {}
+    return null;
+}
+function _warpAnalyzed(comp) {
+    try { return comp.properties[0].getValue() === true; }
+    catch (e) { return true; } // illisible → on considère analysé pour ne rien casser
+}
+// Compteur d'analyse (figé = bloqué/jamais lancé, en hausse = analyse en cours).
+function _warpCounter(comp) {
+    try { return Number(comp.properties[comp.properties.numItems - 1].getValue()); }
+    catch (e) { return -1; }
+}
+
+// Relance l'analyse d'un segment V2 d'un nest : retire le Warp (segment = Warp seul)
+// puis le repose via QE (l'ajout redéclenche l'analyse). "" si OK, message sinon.
+function _reanalyzeNestSegment(stabSeq, segIdx) {
+    if (!_activate(stabSeq)) return "activation de " + stabSeq.name + " impossible";
+    app.enableQE();
+    var qeSeq = qe.project.getActiveSequence();
+    if (!qeSeq || qeSeq.name !== stabSeq.name) return "séquence " + stabSeq.name + " introuvable côté QE";
+    var qeTrack = qeSeq.getVideoTrackAt(1);
+    var rank = -1;
+    for (var j = 0; j < qeTrack.numItems; j++) {
+        var qi = qeTrack.getItemAt(j);
+        if (!qi || qi.type === "Empty") continue;
+        rank++;
+        if (rank !== segIdx) continue;
+        try { qi.removeEffects(0, 0, true, false, false); } catch (e) {}
+        break;
+    }
+    return _applyWarpToClipAt(stabSeq, 1, segIdx);
+}
+
+// Relance l'analyse pour un clip de montage : direct (Warp sur le clip) ou nest
+// (un ou plusieurs segments V2). Ne touche qu'aux Warp non analysés.
+function _reanalyzeOne(clip, seq) {
+    var lbl = clip.name + " : ";
+    var pi = null; try { pi = clip.projectItem; } catch (eP) {}
+
+    if (pi && _isStabName(pi.name)) {
+        var ss = _findSequenceByName(pi.name);
+        if (!ss) return lbl + "ECHEC nest " + pi.name + " introuvable";
+        if (ss.videoTracks.numTracks < 2) return lbl + "ECHEC pas de V2";
+        var v2 = ss.videoTracks[1];
+        var todo = [];
+        for (var k = 0; k < v2.clips.numItems; k++) {
+            var w = _warpComp(v2.clips[k]);
+            if (w && !_warpAnalyzed(w)) todo.push(k);
+        }
+        if (!todo.length) return lbl + "déjà analysé (tous les segments)";
+        var orig = app.project.activeSequence;
+        var msgs = [];
+        for (var i = 0; i < todo.length; i++) {
+            var rr = _reanalyzeNestSegment(ss, todo[i]);
+            msgs.push("segment #" + todo[i] + " : " + (rr === "" ? "analyse relancée" : "ECHEC " + rr));
+        }
+        _closeSequence(ss);
+        if (orig) _activate(orig);
+        return lbl + msgs.join(" | ");
+    }
+
+    var wc = _warpComp(clip);
+    if (!wc) return lbl + "pas de Warp sur ce clip";
+    if (_warpAnalyzed(wc)) return lbl + "déjà analysé";
+    var rm = _removeWarpDirect(clip, seq);
+    if (rm !== "") return lbl + rm;
+    var add = _applyWarpDirect(clip, seq);
+    return lbl + (add === "" ? "analyse relancée (direct)" : "ECHEC " + add);
+}
+
+// SONDE TEMPORAIRE : relance l'analyse sur la sélection (validation du mécanisme).
+function SW_reanalyzeSelection() {
+    try {
+        if (!app.project) return "ECHEC aucun projet";
+        var seq = app.project.activeSequence;
+        if (!seq) return "ECHEC aucune séquence active";
+        var sel = seq.getSelection();
+        if (!sel || !sel.length) return "ECHEC sélectionne au moins un clip";
+        $.global._swMontageSeq = seq;
+        var out = [];
+        for (var i = 0; i < sel.length; i++) {
+            if (sel[i].mediaType !== "Video") continue;
+            try { out.push(_reanalyzeOne(sel[i], seq)); }
+            catch (e) { out.push(sel[i].name + " : ECHEC " + e); }
+        }
+        _activate(seq);
+        return out.length ? out.join("\n") : "aucun clip vidéo sélectionné";
+    } catch (e) { return "relance : " + e; }
+}
+
 function SW_diagWarp() {
     try {
         if (!app.project) return "ECHEC aucun projet";

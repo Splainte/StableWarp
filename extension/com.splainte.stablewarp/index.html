@@ -43,6 +43,7 @@
   <button id="stabBtn" onclick="stabilize()">Stabiliser la sélection</button>
   <button id="unstabBtn" onclick="unstabilize()">Dé-stabiliser (restaurer le rush d'origine)</button>
   <button id="diagBtn" onclick="diagWarp()" style="display:block;width:100%;margin-top:8px;padding:7px;font-size:11px;background:#3a2d4a;color:#cdbbe0;border:1px solid #5a4a6a;border-radius:6px;cursor:pointer;">🔍 SONDE : diag Warp (clip sélectionné)</button>
+  <button id="reanBtn" onclick="reanalyze()" style="display:block;width:100%;margin-top:6px;padding:7px;font-size:11px;background:#2d4a3a;color:#bbe0cd;border:1px solid #4a6a5a;border-radius:6px;cursor:pointer;">🔧 SONDE : relancer l'analyse (clip sélectionné)</button>
 
   <div class="row">
     <label for="watch">Re-stab auto si les in/out bougent (recommandé)</label>
@@ -115,6 +116,16 @@
     log('▶ SONDE diag Warp', 'info');
     evalJSX('SW_diagWarp()', function (res) {
       log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res, 'dim');
+    });
+  }
+
+  function reanalyze() {
+    if (busy) return;
+    busy = true;
+    log('▶ SONDE relance analyse', 'info');
+    evalJSX('SW_reanalyzeSelection()', function (res) {
+      log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
+      busy = false;
     });
   }
 

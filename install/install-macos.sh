@@ -37,7 +37,12 @@ else
 fi
 curl -fsSL "$URL" -o "$TMP/stablewarp.tar.gz"
 tar -xzf "$TMP/stablewarp.tar.gz" -C "$TMP"
-SRC=$(find "$TMP" -maxdepth 2 -type d -path "*/extension/$EXT_ID" | head -1)
+SRC=$(find "$TMP" -maxdepth 3 -type d -path "*/extension/$EXT_ID" | head -1)
+
+if [ -z "$SRC" ]; then
+  echo "Erreur : dossier d'extension introuvable dans l'archive." >&2
+  exit 1
+fi
 
 # 3. Installer le panneau (remplace proprement la version précédente).
 rm -rf "$DEST"

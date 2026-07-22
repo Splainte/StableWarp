@@ -310,9 +310,23 @@ function _ensureCoverage(stabSeq, wantIn, wantOut) {
     }
 }
 
+// Bornes de balayage des pistes : une seule piste si trackIdx est connu (lève
+// l'ambiguïté nom+start entre un clip et son jumeau aligné sur une autre piste),
+// sinon toutes (repli historique). trackIdx négatif/absent = toutes.
+function _trackBounds(seq, trackIdx) {
+    if (trackIdx !== undefined && trackIdx !== null && trackIdx >= 0 &&
+        trackIdx < seq.videoTracks.numTracks) {
+        return { from: trackIdx, to: trackIdx + 1 };
+    }
+    return { from: 0, to: seq.videoTracks.numTracks };
+}
+
 // Pose le Warp directement sur un clip de montage à vitesse 100 % (pas besoin de nest).
 // Correspondance DOM↔QE : le k-ième clip DOM d'une piste = le k-ième item non vide QE.
-function _applyWarpDirect(item, montageSeq) {
+// trackIdx (optionnel) restreint la recherche à la piste du clip sélectionné : sans lui,
+// un clip identique aligné sur une piste inférieure était trouvé d'abord → effet posé
+// sur « celui d'en dessous ».
+function _applyWarpDirect(item, montageSeq, trackIdx) {
     try {
         for (var c0 = 0; c0 < item.components.numItems; c0++) {
             if (item.components[c0].matchName === SW_WARP_MATCHNAME) return "déjà stabilisé (Warp présent)";
@@ -324,7 +338,8 @@ function _applyWarpDirect(item, montageSeq) {
     if (!qeSeq) return "ECHEC séquence introuvable côté QE";
     var fx = _findStabEffect();
     if (!fx) return "ECHEC effet Warp Stabilizer introuvable";
-    for (var t = 0; t < montageSeq.videoTracks.numTracks; t++) {
+    var b = _trackBounds(montageSeq, trackIdx);
+    for (var t = b.from; t < b.to; t++) {
         var tr = montageSeq.videoTracks[t];
         for (var k = 0; k < tr.clips.numItems; k++) {
             var c2 = tr.clips[k];
@@ -380,7 +395,7 @@ function _userEffects(item) {
 // 1) component.remove() ciblé (sans risque pour les autres effets) ;
 // 2) QE removeEffects, uniquement si le clip n'a AUCUN autre effet utilisateur
 //    (sémantique incertaine — on ne risque pas un Lumetri) ; sonde sinon.
-function _removeWarpDirect(item, montageSeq) {
+function _removeWarpDirect(item, montageSeq, trackIdx) {
     var compProbe = [];
     try {
         for (var c = 0; c < item.components.numItems; c++) {
@@ -408,7 +423,8 @@ function _removeWarpDirect(item, montageSeq) {
         _activate(montageSeq);
         app.enableQE();
         var qeSeq = qe.project.getActiveSequence();
-        for (var t = 0; t < montageSeq.videoTracks.numTracks; t++) {
+        var b = _trackBounds(montageSeq, trackIdx);
+        for (var t = b.from; t < b.to; t++) {
             var tr = montageSeq.videoTracks[t];
             for (var k = 0; k < tr.clips.numItems; k++) {
                 var c2 = tr.clips[k];
@@ -442,15 +458,15 @@ function _removeWarpDirect(item, montageSeq) {
 
 // Cas « stab directe puis vitesse changée » : retire le Warp direct puis refait une
 // stabilisation nest — appelé par le watcher pour une transparence totale.
-function _migrateDirectToNest(item, montageSeq) {
-    var rm = _removeWarpDirect(item, montageSeq);
+function _migrateDirectToNest(item, montageSeq, trackIdx) {
+    var rm = _removeWarpDirect(item, montageSeq, trackIdx);
     if (rm !== "") return rm;
-    return _stabilizeOne(item, 0);
+    return _stabilizeOne(item, 0, trackIdx);
 }
 
 // ---------- stabilisation d'un clip ----------
 
-function _stabilizeOne(item, marges) {
+function _stabilizeOne(item, marges, trackIdx) {
     var lbl = item.name + " : ";
     var reversed = false;
     try { reversed = !!item.isSpeedReversed(); } catch (eR) {}
@@ -472,7 +488,7 @@ function _stabilizeOne(item, marges) {
     var spd = 1;
     try { spd = item.getSpeed(); } catch (eSp) {}
     if (!reversed && Math.abs(spd - 1) < 0.0001) {
-        var direct = _applyWarpDirect(item, $.global._swMontageSeq || app.project.activeSequence);
+        var direct = _applyWarpDirect(item, $.global._swMontageSeq || app.project.activeSequence, trackIdx);
         return lbl + (direct === "" ? "stabilisé directement (vitesse 100 %, analyse en cours)" : direct);
     }
 
@@ -556,17 +572,42 @@ function SW_stabilizeSelection(marges) {
     marges = Number(marges) || 0;
 
     var sel = seq.getSelection();
-    var items = [];
+    var selVideo = 0;
     for (var i = 0; i < sel.length; i++) {
-        if (sel[i].mediaType === "Video") items.push(sel[i]);
+        if (sel[i].mediaType === "Video") selVideo++;
     }
-    if (items.length === 0) return "ECHEC sélectionne au moins un clip vidéo dans la timeline";
+    if (selVideo === 0) return "ECHEC sélectionne au moins un clip vidéo dans la timeline";
+
+    // On repère chaque clip vidéo sélectionné AVEC sa piste, en balayant les pistes et
+    // en retenant les clips sélectionnés (isSelected). Sans la piste, l'effet direct
+    // pouvait se poser sur un clip identique aligné sur une piste inférieure (« celui
+    // d'en dessous »). Repli sur getSelection (sans piste) si le balayage n'aboutit pas
+    // au même compte — jamais pire que le comportement historique.
+    var picks = [];
+    var scanOk = true;
+    try {
+        for (var t = 0; t < seq.videoTracks.numTracks; t++) {
+            var tr = seq.videoTracks[t];
+            for (var k = 0; k < tr.clips.numItems; k++) {
+                var clip = tr.clips[k];
+                if (clip.mediaType === "Video" && clip.isSelected()) {
+                    picks.push({ item: clip, trackIdx: t });
+                }
+            }
+        }
+    } catch (eScan) { scanOk = false; }
+    if (!scanOk || picks.length !== selVideo) {
+        picks = [];
+        for (var i2 = 0; i2 < sel.length; i2++) {
+            if (sel[i2].mediaType === "Video") picks.push({ item: sel[i2], trackIdx: -1 });
+        }
+    }
 
     $.global._swMontageSeq = seq;
     var results = [];
-    for (var j = 0; j < items.length; j++) {
-        try { results.push(_stabilizeOne(items[j], marges)); }
-        catch (e) { results.push(items[j].name + " : ECHEC " + e); }
+    for (var j = 0; j < picks.length; j++) {
+        try { results.push(_stabilizeOne(picks[j].item, marges, picks[j].trackIdx)); }
+        catch (e) { results.push(picks[j].item.name + " : ECHEC " + e); }
     }
     _activate(seq);
     return results.join("\n");
@@ -733,7 +774,7 @@ function SW_watchTick(restab, banner) {
                     var key = clip.name + "@" + clip.start.seconds.toFixed(2) + "@" + spd + (rev ? "R" : "");
                     if (!$.global._swMigrFail[key]) {
                         msgs.push(clip.name + " : vitesse modifiée après stab directe → migration vers nest…");
-                        var mres = _migrateDirectToNest(clip, seq);
+                        var mres = _migrateDirectToNest(clip, seq, t);
                         msgs.push(mres);
                         if (mres.indexOf("ECHEC") >= 0) {
                             $.global._swMigrFail[key] = true;
@@ -752,8 +793,8 @@ function SW_watchTick(restab, banner) {
                     seen[bkey] = 1;
                     var d = _bannerDecide(bkey);
                     if (d === "due") {
-                        var rm = _removeWarpDirect(clip, seq);
-                        var add = (rm === "") ? _applyWarpDirect(clip, seq) : rm;
+                        var rm = _removeWarpDirect(clip, seq, t);
+                        var add = (rm === "") ? _applyWarpDirect(clip, seq, t) : rm;
                         _bannerDidRelaunch(bkey);
                         msgs.push(clip.name + " : bandeau bleu détecté → " +
                             (add === "" ? "analyse relancée" : "ECHEC relance : " + add));

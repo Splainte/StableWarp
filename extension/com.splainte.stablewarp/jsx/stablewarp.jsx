@@ -859,6 +859,75 @@ function SW_env() {
     return "Premiere " + app.version + " — " + (app.project ? app.project.name : "aucun projet");
 }
 
+// ---------- diagnostic bandeau bleu (LECTURE SEULE, ne modifie rien) ----------
+
+// Représentation lisible d'une valeur de propriété (booléens/nombres/chaînes/objets).
+function _diagVal(v) {
+    try {
+        if (v === true) return "true";
+        if (v === false) return "false";
+        if (v === null) return "null";
+        if (v === undefined) return "undefined";
+        if (typeof v === "number") return String(v);
+        if (typeof v === "string") return '"' + v + '"';
+        return String(v);
+    } catch (e) { return "?"; }
+}
+
+// Vidange complète du Warp d'un clip : matchName, toutes ses propriétés (nom + valeur)
+// et le verdict de l'heuristique actuelle. Sert à identifier quel signal distingue
+// vraiment le bandeau bleu (« Analyser ») d'un clip déjà analysé.
+function _diagWarpComp(item, trackIdx) {
+    var out = [];
+    out.push("=== " + item.name + " (V" + (trackIdx + 1) +
+             ", début " + item.start.seconds.toFixed(2) + "s) ===");
+    var wc = null, wcIdx = -1;
+    try {
+        for (var c = 0; c < item.components.numItems; c++) {
+            if (item.components[c].matchName === SW_WARP_MATCHNAME) { wc = item.components[c]; wcIdx = c; break; }
+        }
+    } catch (e0) {}
+    if (!wc) { out.push("  (pas d'effet Stabilisation sur ce clip)"); return out.join("\n"); }
+    out.push("  composant[" + wcIdx + "] matchName=" + wc.matchName);
+    var props = null;
+    try { props = wc.properties; } catch (eP) { out.push("  properties illisibles : " + eP); return out.join("\n"); }
+    var n = 0;
+    try { n = props.numItems; } catch (eN) {}
+    out.push("  " + n + " propriété(s) :");
+    var max = n < 60 ? n : 60;
+    for (var i = 0; i < max; i++) {
+        var nm = "?", val = "?";
+        try { nm = props[i].displayName; } catch (eNm) {}
+        try { val = _diagVal(props[i].getValue()); } catch (eV) { val = "getValue ECHEC (" + eV + ")"; }
+        out.push("    [" + i + "] " + nm + " = " + val);
+    }
+    var verdict = "?";
+    try { verdict = _warpAnalyzed(wc) ? "ANALYSÉ → aucune relance" : "NON analysé → relance prévue"; } catch (eW) {}
+    out.push("  heuristique actuelle _warpAnalyzed → " + verdict);
+    return out.join("\n");
+}
+
+// API panneau : diagnostic des clips vidéo sélectionnés (rien n'est modifié).
+function SW_diagWarp() {
+    if (!app.project) return "ECHEC aucun projet ouvert";
+    var seq = app.project.activeSequence;
+    if (!seq) return "ECHEC aucune séquence active";
+    var picks = [];
+    try {
+        for (var t = 0; t < seq.videoTracks.numTracks; t++) {
+            var tr = seq.videoTracks[t];
+            for (var k = 0; k < tr.clips.numItems; k++) {
+                var clip = tr.clips[k];
+                if (clip.mediaType === "Video" && clip.isSelected()) picks.push({ item: clip, t: t });
+            }
+        }
+    } catch (eS) {}
+    if (!picks.length) return "Diagnostic : sélectionne d'abord le(s) clip(s) qui affiche(nt) le bandeau bleu, puis relance.";
+    var res = ["StableWarp — diagnostic bandeau — " + SW_env()];
+    for (var p = 0; p < picks.length; p++) res.push(_diagWarpComp(picks[p].item, picks[p].t));
+    return res.join("\n\n");
+}
+
 // ---------- helpers de détection de l'état d'analyse du Warp ----------
 
 // Le Warp du clip (ou null).

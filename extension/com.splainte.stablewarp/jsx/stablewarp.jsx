@@ -773,27 +773,27 @@ function SW_env() {
     return "Premiere " + app.version + " — " + (app.project ? app.project.name : "aucun projet");
 }
 
-// ---------- détecteur de bandeau bleu (par l'image) ----------
-// Premiere n'expose aucune propriété lisible qui dise « ce Warp attend une analyse »
-// (diags du 2026-10-06 : mêmes valeurs avec et sans bandeau ; seul AnalysisStatusCounter
-// bouge, +500 par analyse terminée). En revanche le bandeau est dessiné dans l'image
-// rendue : on exporte une image du milieu de chaque clip stabilisé (exportFramePNG), le
-// panneau y cherche la bande bleue pleine largeur, et on relance l'analyse là où elle
-// persiste. Marche dans tous les cas : réouverture d'un vieux projet, trim, etc.
-//
-// Cycle par clip (clé = piste + nom + position + portion de rush : un clip modifié
-// change de clé et est donc revérifié) :
-//   todo → capture : pas de bande → ok ; bande → suspect
-//   suspect → nouvelle capture après SW_RECHECK_MS : bande et compteur inchangé →
-//     relance (launched) ; compteur qui avance = analyse en cours → on patiente
-//   launched → fin d'analyse (compteur +500) ou SW_LAUNCH_TIMEOUT_MS → todo (contrôle)
-// Les clips que StableWarp vient lui-même de stabiliser démarrent en launched.
+// ---------- détecteur de bandeau bleu (par la barre de rendu) ----------
+// Aucune propriété du Warp ne dit « ce clip attend une analyse » (diags du 2026-10-06),
+// et sequence.isDoneAnalyzingForVideoEffects() ne voit que les analyses EN COURS, pas
+// les bandeaux en attente. En revanche la barre de rendu de la timeline, lisible via
+// QE (getRedBarTimes), est rouge exactement sous les clips à bandeau (test du
+// 2026-10-06 : 8 zones rouges = les 8 clips à bandeau, au centième de seconde), et
+// jaune sous un Warp analysé. D'où :
+//   1. une analyse tourne → on attend (la barre est rouge pendant l'analyse)
+//   2. rien ne tourne → tout clip stabilisé sous du rouge a un bandeau → relance
+//      (SW_BATCH au plus à la fois : Premiere plante au-delà de ~5 analyses)
+//   3. nest (ralenti) : le flux optique rend aussi la barre rouge → on lit la barre de
+//      rendu du nest lui-même, qui ne contient que les segments Warp
+//   4. encore rouge APRÈS la ré-analyse (autre effet lourd, Neat Video…) → une capture
+//      d'image tranche : bandeau → nouvelle relance ; pas de bandeau → on laisse
+// Un clip modifié change de clé (piste + nom + position + portion de rush) et repart
+// de zéro.
 
 var SW_BANNER_MAX_TRIES = 2;
-var SW_RECHECK_MS = 15000;
-var SW_LAUNCH_TIMEOUT_MS = 15 * 60000;
-var SW_COUNTER_STEP = 500;   // incrément d'AnalysisStatusCounter par analyse terminée
-var SW_RANGE_EPS = 0.02;     // ~ une demi-image
+var SW_GRACE_MS = 10000;   // le temps qu'une analyse fraîchement lancée démarre
+var SW_BATCH = 3;          // analyses relancées en même temps au plus
+var SW_RANGE_EPS = 0.02;   // ~ une demi-image
 
 function _near(a, b) { return Math.abs(a - b) < SW_RANGE_EPS; }
 function _now() { return new Date().getTime(); }
@@ -820,17 +820,6 @@ function _markFresh(clip) {
             }
         }
     } catch (e) {}
-}
-
-// Valeur d'AnalysisStatusCounter (null si absente).
-function _warpCounter(comp) {
-    try {
-        var props = comp.properties;
-        for (var i = props.numItems - 1; i >= 0; i--) {
-            if (props[i].displayName === "AnalysisStatusCounter") return Number(props[i].getValue()) || 0;
-        }
-    } catch (e) {}
-    return null;
 }
 
 // Réglages du Warp (propriétés nommées, hors compteur interne).
@@ -877,23 +866,51 @@ function _relaunchDirect(item, montageSeq, trackIdx) {
     return "";
 }
 
-// Compteur d'analyse d'un nest = somme des compteurs de ses segments (avance de +500 à
-// chaque segment analysé). null si illisible.
-function _nestCounter(stabSeq) {
+// Zones rouges de la barre de rendu d'une séquence QE : [[début, fin], …] en secondes.
+// getRedBarTimes renvoie une liste plate de bornes, deux par zone.
+function _redRanges(qeSeq) {
+    var out = [], v = qeSeq.getRedBarTimes();
+    for (var i = 0; i + 1 < v.length; i += 2) {
+        var s = Number(v[i].secs), e = Number(v[i + 1].secs);
+        if (e > s) out.push([s, e]);
+    }
+    return out;
+}
+
+// Part de [s, e] couverte par les zones.
+function _redShare(ranges, s, e) {
+    if (e <= s) return 0;
+    var cov = 0;
+    for (var i = 0; i < ranges.length; i++) {
+        var a = Math.max(s, ranges[i][0]), b = Math.min(e, ranges[i][1]);
+        if (b > a) cov += b - a;
+    }
+    return cov / (e - s);
+}
+
+function _qeSeqOf(seq) {
+    for (var i = 0; i < qe.project.numSequences; i++) {
+        var q = qe.project.getSequenceAt(i);
+        if (q && q.guid === seq.sequenceID) return q;
+    }
+    return null;
+}
+
+// Le nest a-t-il du rouge (segment Warp en attente) sur la portion de rush du clip ?
+// true / false, ou null si sa barre de rendu est illisible (nest jamais chargé…).
+function _nestPending(stabSeq, item) {
     try {
-        if (!stabSeq || stabSeq.videoTracks.numTracks < 2) return null;
-        var v2 = stabSeq.videoTracks[1], sum = 0, any = false;
-        for (var k = 0; k < v2.clips.numItems; k++) {
-            var w = _warpComp(v2.clips[k]);
-            var c = w ? _warpCounter(w) : null;
-            if (c !== null) { sum += c; any = true; }
-        }
-        return any ? sum : null;
+        if (!stabSeq) return null;
+        var q = _qeSeqOf(stabSeq);
+        if (!q) return null;
+        var red = _redRanges(q);
+        if (!red.length && !q.getYellowBarTimes().length) return null; // barre vide = pas calculée
+        var rng = _sourceRange(item); // le nest mappe 1:1 le temps source
+        return _redShare(red, rng.inSec, rng.outSec) > 0.2;
     } catch (e) { return null; }
 }
 
-// Clips stabilisés de la séquence (Warp direct à 100 % ou nest _stab), avec leur clé
-// et leur compteur d'analyse.
+// Clips stabilisés de la séquence (Warp direct à 100 % ou nest _stab) avec leur clé.
 function _bannerClips(seq) {
     var out = [];
     for (var t = 0; t < seq.videoTracks.numTracks; t++) {
@@ -903,22 +920,17 @@ function _bannerClips(seq) {
             var pi = null;
             try { pi = clip.projectItem; } catch (eP) {}
             if (!pi) continue;
-            var nest = "", ctr = null;
+            var nest = "";
             if (_isStabName(pi.name)) {
-                var stabSeq = _findSequenceByName(pi.name);
-                if (!stabSeq) continue;
                 nest = pi.name;
-                ctr = _nestCounter(stabSeq);
             } else {
-                var wc = _warpComp(clip);
-                if (!wc) continue;
+                if (!_warpComp(clip)) continue;
                 var spd = 1, rev = false;
                 try { spd = clip.getSpeed(); } catch (eS) {}
                 try { rev = !!clip.isSpeedReversed(); } catch (eR) {}
                 if (Math.abs(spd - 1) > 0.0001 || rev) continue; // migration vers nest en cours
-                ctr = _warpCounter(wc);
             }
-            out.push({ clip: clip, t: t, nest: nest, ctr: ctr, key: t + "|" + _freshKey(clip) });
+            out.push({ clip: clip, t: t, nest: nest, key: t + "|" + _freshKey(clip) });
         }
     }
     return out;
@@ -942,8 +954,28 @@ function _bnState(seq) {
     return $.global._swBnSeqs[sid];
 }
 
-// API panneau : prochaine capture à faire. Renvoie "CAPTURE|<chemin sans extension>"
-// ou "" (rien à faire, ou tête de lecture en mouvement : on ne gêne pas le monteur).
+// Relance l'analyse du clip de r (2 fois au plus). Renvoie le message à logguer.
+function _bnRelaunch(seq, r) {
+    if (r.tries >= SW_BANNER_MAX_TRIES) {
+        r.state = "gaveup";
+        return r.name + " : bandeau bleu toujours là après " + SW_BANNER_MAX_TRIES +
+            " relances — laissé tel quel (clique Analyser à la main)";
+    }
+    var clip = _findClip(seq, r.t, r.name, r.start);
+    if (!clip) return "";
+    $.global._swMontageSeq = seq;
+    var rr = r.nest ? _reanalyzeNestFor(clip, r.nest) : _relaunchDirect(clip, seq, r.t);
+    var ok = r.nest ? rr.indexOf("ECHEC") !== 0 : rr === "";
+    r.tries++;
+    r.at = _now();
+    r.state = "relaunched";
+    _activate(seq);
+    return r.name + " : bandeau bleu détecté → " + (ok ? "analyse relancée" : "ECHEC relance : " + rr);
+}
+
+// API panneau, à chaque tick : relance l'analyse des clips à bandeau. Renvoie des lignes
+// de log, plus éventuellement "CAPTURE|<chemin sans extension>" quand une image doit
+// trancher (le panneau répond alors par SW_bannerResult).
 function SW_bannerNext(dir, sep) {
     try {
         if (!app.project || !app.project.activeSequence) return "";
@@ -951,50 +983,60 @@ function SW_bannerNext(dir, sep) {
         if (_isStabName(seq.name)) return "";
         var g = _bnState(seq);
         g.job = null;
+        // tête de lecture qui bouge (lecture, scrub) : on ne gêne pas le monteur
         var pos = null;
         try { pos = seq.getPlayerPosition().seconds; } catch (eP) {}
         var moving = (g.pos !== null && pos !== g.pos);
         g.pos = pos;
         if (moving) return "";
+        // une analyse tourne : la barre est rouge pendant l'analyse, on attend la fin
+        var done = true;
+        try { done = seq.isDoneAnalyzingForVideoEffects(); } catch (eD) {}
+        if (!done) return "";
+        // lot précédent pas encore démarré côté Premiere : ne pas en empiler un autre
+        if (g.lastLaunch && _now() - g.lastLaunch < SW_GRACE_MS) return "";
+        app.enableQE();
+        var qs = qe.project.getActiveSequence();
+        if (!qs) return "";
+        var red = _redRanges(qs);
 
         var now = _now(), fresh = $.global._swFresh || {};
-        var list = _bannerClips(seq), recs = {}, pickTodo = null, pickSuspect = null;
+        var list = _bannerClips(seq), recs = {}, msgs = [], launched = 0, confirm = null;
         for (var i = 0; i < list.length; i++) {
-            var c = list[i], r = g.recs[c.key];
-            if (!r) {
-                var fk = fresh[_freshKey(c.clip)];
-                r = (fk && now - fk < SW_LAUNCH_TIMEOUT_MS) ?
-                    { state: "launched", at: fk, ctr: c.ctr, tries: 0, fails: 0 } :
-                    { state: "todo", tries: 0, fails: 0 };
-            }
-            r.t = c.t; r.nest = c.nest; r.name = c.clip.name; r.cur = c.ctr;
-            r.start = c.clip.start.seconds; r.end = c.clip.end.seconds;
-            if (r.state === "launched" &&
-                ((r.ctr !== null && c.ctr !== null && c.ctr - r.ctr >= SW_COUNTER_STEP) ||
-                 now - r.at > SW_LAUNCH_TIMEOUT_MS)) r.state = "todo"; // fini : on contrôle
+            var c = list[i];
+            var r = g.recs[c.key] || { state: "new", tries: 0, fails: 0, at: 0 };
             recs[c.key] = r;
-            if (!pickSuspect && r.state === "suspect" && now - r.at >= SW_RECHECK_MS) pickSuspect = c.key;
-            if (!pickTodo && r.state === "todo") pickTodo = c.key;
+            r.t = c.t; r.nest = c.nest; r.name = c.clip.name;
+            r.start = c.clip.start.seconds; r.end = c.clip.end.seconds;
+            if (r.state === "gaveup" || r.state === "other") continue;
+            var fk = fresh[_freshKey(c.clip)];
+            if ((fk && now - fk < SW_GRACE_MS) || now - r.at < SW_GRACE_MS) continue; // analyse qui démarre
+            if (_redShare(red, r.start, r.end) < 0.5) { r.state = "ok"; continue; }
+            // rouge : pour un nest, sa propre barre dit si c'est le Warp ou le ralenti
+            if (c.nest && _nestPending(_findSequenceByName(c.nest), c.clip) === false) { r.state = "ok"; continue; }
+            if (r.state === "relaunched") { if (!confirm) confirm = c.key; continue; } // rouge malgré la ré-analyse
+            if (launched >= SW_BATCH) continue;
+            var m = _bnRelaunch(seq, r);
+            if (m) msgs.push(m);
+            launched++;
+            g.lastLaunch = now;
         }
         g.recs = recs; // les clips disparus sont oubliés
-        var key = pickSuspect || pickTodo;
-        if (!key) return "";
 
-        var rec = recs[key], st = seq.getSettings();
-        var tc = _t((rec.start + rec.end) / 2).getFormatted(st.videoFrameRate, st.videoDisplayFormat);
-        app.enableQE();
-        var qeSeq = qe.project.getActiveSequence();
-        if (!qeSeq) return "";
-        var base = dir + sep + "sw-bandeau-" + now;
-        qeSeq.exportFramePNG(tc, base);
-        g.job = key;
-        return "CAPTURE|" + base;
+        if (!launched && confirm) {
+            var rec = recs[confirm], st = seq.getSettings();
+            var tc = _t((rec.start + rec.end) / 2).getFormatted(st.videoFrameRate, st.videoDisplayFormat);
+            var base = dir + sep + "sw-bandeau-" + now;
+            qs.exportFramePNG(tc, base);
+            g.job = confirm;
+            msgs.push("CAPTURE|" + base);
+        }
+        return msgs.join("\n");
     } catch (e) { return ""; }
 }
 
-// API panneau : verdict de l'image de la dernière capture (1 = bande bleue, 0 = rien,
-// -1 = image illisible). Relance l'analyse si le bandeau persiste. Renvoie un message
-// à logguer, ou "".
+// API panneau : verdict de l'image de confirmation (1 = bandeau, 0 = rien, -1 = image
+// illisible). Renvoie un message à logguer, ou "".
 function SW_bannerResult(hasBand) {
     try {
         var seq = app.project.activeSequence;
@@ -1005,31 +1047,11 @@ function SW_bannerResult(hasBand) {
         if (!r) return "";
         hasBand = Number(hasBand);
         if (hasBand < 0) {
-            if (++r.fails >= 3) { r.state = "ok"; return r.name + " : capture d'image impossible, clip non surveillé"; }
+            if (++r.fails >= 3) { r.state = "other"; return r.name + " : capture d'image impossible, clip non surveillé"; }
             return "";
         }
-        if (!hasBand) { r.state = "ok"; return ""; }
-        if (r.state === "todo") { r.state = "suspect"; r.at = _now(); r.ctr = r.cur; return ""; }
-        if (r.state !== "suspect") return "";
-        if (r.cur !== r.ctr) { r.at = _now(); r.ctr = r.cur; return ""; } // analyse en cours
-        if (r.tries >= SW_BANNER_MAX_TRIES) {
-            r.state = "gaveup";
-            return r.name + " : bandeau bleu toujours là après " + SW_BANNER_MAX_TRIES +
-                " relances — laissé tel quel (clique Analyser à la main)";
-        }
-        var clip = _findClip(seq, r.t, r.name, r.start);
-        if (!clip) return "";
-        $.global._swMontageSeq = seq;
-        var rr = r.nest ? _reanalyzeNestFor(clip, r.nest) : _relaunchDirect(clip, seq, r.t);
-        var ok = r.nest ? rr.indexOf("ECHEC") !== 0 : rr === "";
-        r.tries++;
-        r.at = _now();
-        if (ok) {
-            r.state = "launched";
-            r.ctr = r.nest ? _nestCounter(_findSequenceByName(r.nest)) : _warpCounter(_warpComp(clip));
-        }
-        _activate(seq);
-        return r.name + " : bandeau bleu détecté → " + (ok ? "analyse relancée" : "ECHEC relance : " + rr);
+        if (!hasBand) { r.state = "other"; return ""; } // rouge pour une autre raison (autre effet lourd)
+        return _bnRelaunch(seq, r);
     } catch (e) { return "détecteur bandeau : " + e; }
 }
 

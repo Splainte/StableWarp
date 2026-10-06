@@ -71,7 +71,7 @@
   </div>
 
 <script>
-  var SW_VERSION = '1.1.3-test5';
+  var SW_VERSION = '1.1.3-test6';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -204,9 +204,10 @@
     if (document.getElementById('banner').checked) bannerTick();
   }
 
-  // ---- détecteur de bandeau bleu : capture d'une image par clip stabilisé ----
-  // Le JSX choisit le clip à contrôler et exporte l'image ; ici on attend le fichier,
-  // on y cherche la bande bleue et on renvoie le verdict (une capture à la fois).
+  // ---- détecteur de bandeau bleu ----
+  // Le JSX lit la barre de rendu et relance lui-même les analyses ; il ne demande une
+  // capture d'image que pour trancher un clip resté rouge après sa ré-analyse. Ici on
+  // attend alors le fichier, on y cherche la bande bleue et on renvoie le verdict.
 
   var bannerJob = false;
 
@@ -217,9 +218,14 @@
     try { if (!fs.existsSync(dir)) fs.mkdirSync(dir); } catch (e) { return; }
     bannerJob = true;
     evalJSX('SW_bannerNext(' + JSON.stringify(dir) + ', ' + JSON.stringify(path.sep) + ')', function (res) {
-      var m = /^CAPTURE\|(.+)$/.exec(res || '');
-      if (!m) { bannerJob = false; return; }
-      waitForPng(m[1], function (file) {
+      if (!res || res === 'EvalScript error.') { bannerJob = false; return; }
+      var lines = String(res).split('\n'), cap = null;
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf('CAPTURE|') === 0) cap = lines[i].substr(8);
+        else log(lines[i]);
+      }
+      if (!cap) { bannerJob = false; return; }
+      waitForPng(cap, function (file) {
         if (!file) { bannerVerdict(-1); return; }
         detectBand(file, function (v) {
           try { fs.unlinkSync(file); } catch (e) {}

@@ -1199,8 +1199,50 @@ function SW_testAnalysisApi() {
         catch (e) { return "illisible : " + e; }
         return r.join(", ");
     }
-    out.push("Méthodes DOM de la séquence : " + names(seq));
-    try { app.enableQE(); out.push("Méthodes QE de la séquence : " + names(qe.project.getActiveSequence())); } catch (eQ) {}
+    // valeur brute lisible, quel que soit le type renvoyé par QE
+    function dump(v, depth) {
+        if (v === null || v === undefined) return String(v);
+        if (typeof v !== "object") return String(v);
+        if (typeof v.length === "number") {
+            var a = [];
+            for (var k = 0; k < v.length && k < 40; k++) a.push(dump(v[k], depth + 1));
+            return "[" + a.join(", ") + (v.length > 40 ? ", … (" + v.length + ")" : "") + "]";
+        }
+        if (depth > 1) return String(v);
+        var p = [];
+        try {
+            var ps = v.reflect.properties;
+            for (var q = 0; q < ps.length; q++) {
+                var n = String(ps[q].name);
+                if (n === "__proto__" || n === "reflect") continue;
+                try { p.push(n + "=" + dump(v[n], depth + 1)); } catch (eP) {}
+            }
+        } catch (eR) { return String(v); }
+        return "{" + p.join(" ") + "}";
+    }
+    try {
+        app.enableQE();
+        var qs = qe.project.getActiveSequence();
+        var calls = ["isIncompleteBackgroundVideoEffects", "getRedBarTimes", "getYellowBarTimes",
+                     "getGreenBarTimes", "getEmptyBarTimes"];
+        out.push("Fonctions QE de la séquence active :");
+        for (var c = 0; c < calls.length; c++) {
+            try { out.push("  " + calls[c] + "() → " + dump(qs[calls[c]](), 0)); }
+            catch (eC) { out.push("  " + calls[c] + "() → erreur : " + eC); }
+        }
+    } catch (eQ) { out.push("QE indisponible : " + eQ); }
+    out.push("Clips stabilisés (piste, nom, début → fin en s) :");
+    for (var t = 0; t < seq.videoTracks.numTracks; t++) {
+        var tr = seq.videoTracks[t];
+        for (var j = 0; j < tr.clips.numItems; j++) {
+            var cl = tr.clips[j], pi = null;
+            try { pi = cl.projectItem; } catch (eI) {}
+            var nest = pi && _isStabName(pi.name);
+            if (!nest && !_warpComp(cl)) continue;
+            out.push("  V" + (t + 1) + " " + cl.name + " : " + cl.start.seconds.toFixed(2) + " → " +
+                cl.end.seconds.toFixed(2) + (nest ? " (nest)" : ""));
+        }
+    }
     return out.join("\n");
 }
 

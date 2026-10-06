@@ -38,6 +38,6 @@ cp -R "$SRC"/. "$DEST"/
 echo ""
 echo "Build DIAGNOSTIC installé dans :"
 echo "    $DEST"
-echo "Redémarre Premiere Pro (Fenêtre > Extensions > StableWarp), version v1.1.3-test."
+echo "Redémarre Premiere Pro (Fenêtre > Extensions > StableWarp), version v1.1.3-test2."
 echo "Au prochain bandeau bleu : sélectionne le clip, clique « Diagnostic bandeau »,"
 echo "et envoie le fichier stablewarp-diag.txt (sur ton Bureau) à Claude."

@@ -1126,6 +1126,51 @@ function _diagWarpComp(item, trackIdx) {
     return out.join("\n");
 }
 
+// TEST : exporte une image (milieu du clip) de chaque clip vidéo sélectionné, pour
+// vérifier si le bandeau bleu du Warp est dessiné dans l'image rendue. Lecture seule.
+// Renvoie une ligne "FILE|<chemin sans extension>|<libellé>" par image demandée, plus
+// la liste des méthodes QE du premier clip (pistes d'exploration).
+function SW_captureSelected(dir, sep) {
+    if (!app.project) return "ECHEC aucun projet ouvert";
+    var seq = app.project.activeSequence;
+    if (!seq) return "ECHEC aucune séquence active";
+    var picks = _selectedVideoPicks(seq);
+    if (!picks.length) return "ECHEC sélectionne au moins un clip vidéo";
+    app.enableQE();
+    var qeSeq = qe.project.getActiveSequence();
+    if (!qeSeq) return "ECHEC séquence introuvable côté QE";
+    var st = seq.getSettings();
+    var out = [];
+    for (var i = 0; i < picks.length && i < 4; i++) {
+        var it = picks[i].item;
+        var tc = _t((it.start.seconds + it.end.seconds) / 2).getFormatted(st.videoFrameRate, st.videoDisplayFormat);
+        var base = dir + sep + "stablewarp-capture-" + (i + 1) + "-" + it.name.replace(/[^\w.-]/g, "_");
+        try {
+            qeSeq.exportFramePNG(tc, base);
+            out.push("FILE|" + base + "|" + it.name + " à " + tc + (_warpComp(it) ? " (Warp)" : " (sans Warp)"));
+        } catch (e) { out.push("ECHEC export " + it.name + " : " + e); }
+    }
+    try {
+        var t0 = picks[0].trackIdx >= 0 ? picks[0].trackIdx : 0;
+        var tr = seq.videoTracks[t0], k0 = -1;
+        for (var k = 0; k < tr.clips.numItems; k++) {
+            if (tr.clips[k].name === picks[0].item.name &&
+                _near(tr.clips[k].start.seconds, picks[0].item.start.seconds)) { k0 = k; break; }
+        }
+        var qeTrack = qeSeq.getVideoTrackAt(t0), rank = -1;
+        for (var j = 0; j < qeTrack.numItems && k0 >= 0; j++) {
+            var qi = qeTrack.getItemAt(j);
+            if (!qi || qi.type === "Empty") continue;
+            if (++rank !== k0) continue;
+            var ms = qi.reflect.methods, names = [];
+            for (var m = 0; m < ms.length; m++) names.push(String(ms[m].name));
+            out.push("Méthodes QE du clip : " + names.join(", "));
+            break;
+        }
+    } catch (eQ) { out.push("(méthodes QE illisibles : " + eQ + ")"); }
+    return out.join("\n");
+}
+
 // API panneau : diagnostic des clips vidéo sélectionnés (rien n'est modifié).
 function SW_diagWarp() {
     if (!app.project) return "ECHEC aucun projet ouvert";

@@ -40,7 +40,7 @@ echo Build DIAGNOSTIC installe dans :
 echo     %DEST%
 echo.
 echo Redemarre Premiere Pro, puis : Fenetre ^> Extensions ^> StableWarp
-echo Le panneau doit afficher la version v1.1.3-test.
+echo Le panneau doit afficher la version v1.1.3-test2.
 echo Quand un bandeau bleu non detecte apparait : selectionne le clip,
 echo clique "Diagnostic bandeau", et envoie le fichier stablewarp-diag.txt
 echo (sur ton Bureau) a Claude.

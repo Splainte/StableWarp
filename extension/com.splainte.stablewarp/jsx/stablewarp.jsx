@@ -611,8 +611,11 @@ function SW_stabilizeSelection(marges) {
     $.global._swMontageSeq = seq;
     var results = [];
     for (var j = 0; j < picks.length; j++) {
-        try { results.push(_stabilizeOne(picks[j].item, marges, picks[j].trackIdx)); }
-        catch (e) { results.push(picks[j].item.name + " : ECHEC " + e); }
+        try {
+            var res = _stabilizeOne(picks[j].item, marges, picks[j].trackIdx);
+            results.push(res);
+            if (res.indexOf("ECHEC") < 0) _markFresh(picks[j].item);
+        } catch (e) { results.push(picks[j].item.name + " : ECHEC " + e); }
     }
     _activate(seq);
     return results.join("\n");
@@ -700,53 +703,19 @@ function SW_unstabilizeSelection() {
     return results.join("\n");
 }
 
-// ---------- détecteur de bandeau bleu (analyse Warp non faite) ----------
+// ---------- surveillance re-stab ----------
 
-var SW_BANNER_MAX_TRIES = 2;
-
-// Décide, pour un Warp NON analysé, s'il faut relancer son analyse maintenant.
-// Pas de garde-fou « analyse en cours » nécessaire : une analyse qui tourne est
-// déjà vue comme analysée par _warpAnalyzed (p1==false), donc on n'arrive ici que
-// sur un VRAI bandeau bloqué. On confirme quand même sur 2 ticks consécutifs (anti
-// état transitoire) et on plafonne le nombre de relances. Retourne :
-//   "wait" → patienter ; "due" → relancer ; "giveup-now" → abandon (logguer une
-//   fois) ; "gaveup" → silencieux.
-function _bannerDecide(key) {
-    if (!$.global._swBanner) $.global._swBanner = {};
-    var st = $.global._swBanner[key];
-    if (!st) { $.global._swBanner[key] = { seen: 1, tries: 0, gaveUp: false }; return "wait"; }
-    if (st.gaveUp) return "gaveup";
-    st.seen++;
-    if (st.seen < 2) return "wait"; // vu non analysé sur 2 ticks consécutifs
-    if (st.tries >= SW_BANNER_MAX_TRIES) { st.gaveUp = true; return "giveup-now"; }
-    return "due";
-}
-function _bannerDidRelaunch(key) {
-    var st = $.global._swBanner[key];
-    if (st) { st.tries++; st.seen = 0; } // laisse 2 ticks à la relance avant de réessayer
-}
-function _bannerClear(key, seen) {
-    seen[key] = 1;
-    if ($.global._swBanner && $.global._swBanner[key]) delete $.global._swBanner[key];
-}
-
-// Tick du watcher : (1) si restab, étend la couverture des nests _stab débordés et
-// migre les stabs directes invalidées ; (2) si banner, détecte les Warp non analysés
-// (bandeau bleu « Cliquez sur Analyser ») et relance leur analyse, direct comme nest.
-// Renvoie "" si rien à faire (cas normal, pas de log).
-function SW_watchTick(restab, banner) {
+// Tick du watcher re-stab : étend la couverture des nests _stab débordés et migre les
+// stabs directes invalidées (vitesse changée). Le bandeau bleu a son propre cycle
+// (SW_bannerNext / SW_bannerResult). Renvoie "" si rien à faire (pas de log).
+function SW_watchTick() {
     try {
         if (!app.project || !app.project.activeSequence) return "";
         var seq = app.project.activeSequence;
         if (_isStabName(seq.name)) return ""; // ne pas surveiller l'intérieur d'un nest
-        restab = (restab === undefined) ? true : !!Number(restab);
-        banner = !!Number(banner);
         var marges = 0;
-
         $.global._swMontageSeq = seq;
-        if (!$.global._swBanner) $.global._swBanner = {};
         var msgs = [];
-        var seen = {}; // clés de bandeau vues ce tick (purge des obsolètes en fin)
 
         for (var t = 0; t < seq.videoTracks.numTracks; t++) {
             var tr = seq.videoTracks[t];
@@ -759,12 +728,12 @@ function SW_watchTick(restab, banner) {
                 if (_isStabName(pi.name)) {
                     var stabSeq = _findSequenceByName(pi.name);
                     if (!stabSeq) continue;
-                    if (restab) {
-                        var rng = _sourceRange(clip);
-                        var res = _ensureCoverage(stabSeq, rng.inSec - marges, rng.outSec + marges);
-                        if (res !== "") msgs.push(clip.name + " : " + res);
+                    var rng = _sourceRange(clip);
+                    var res = _ensureCoverage(stabSeq, rng.inSec - marges, rng.outSec + marges);
+                    if (res !== "") {
+                        msgs.push(clip.name + " : " + res);
+                        _markFresh(clip); // nouveau segment : son analyse tourne déjà
                     }
-                    if (banner) _bannerScanNest(stabSeq, seen, msgs);
                     continue;
                 }
 
@@ -774,7 +743,7 @@ function SW_watchTick(restab, banner) {
                 try { rev = !!clip.isSpeedReversed(); } catch (eRv) {}
 
                 // stab directe devenue invalide (vitesse changée ou inversée après coup)
-                if (restab && (Math.abs(spd - 1) > 0.0001 || rev) && _hasWarp(clip)) {
+                if ((Math.abs(spd - 1) > 0.0001 || rev) && _hasWarp(clip)) {
                     if (!$.global._swMigrFail) $.global._swMigrFail = {};
                     var key = clip.name + "@" + clip.start.seconds.toFixed(2) + "@" + spd + (rev ? "R" : "");
                     if (!$.global._swMigrFail[key]) {
@@ -784,62 +753,19 @@ function SW_watchTick(restab, banner) {
                         if (mres.indexOf("ECHEC") >= 0) {
                             $.global._swMigrFail[key] = true;
                             msgs.push("(pas de nouvelle tentative tant que la vitesse de ce clip ne rechange pas)");
+                        } else {
+                            _markFresh(clip);
                         }
                     }
-                    continue; // la migration repose un Warp neuf
                 }
             }
         }
 
-        // clips à effet direct : bandeau = portion de rush modifiée depuis l'analyse
-        if (banner) _scanDirectChanges(seq, msgs);
-
-        // purge des entrées de bandeau (nests) qui ne correspondent plus à aucun clip présent
-        for (var pk in $.global._swBanner) {
-            if ($.global._swBanner.hasOwnProperty(pk) && !seen[pk]) delete $.global._swBanner[pk];
-        }
-
-        if (restab) {
-            var orphans = _cleanOrphanZones();
-            if (orphans) msgs.push(orphans);
-        }
+        var orphans = _cleanOrphanZones();
+        if (orphans) msgs.push(orphans);
         return msgs.join("\n");
     } catch (e) {
         return "watcher : " + e;
-    }
-}
-
-// Détecte/relance les bandeaux bleus des segments V2 d'un nest. Lecture seule pour
-// la détection ; n'active la séquence (via _reanalyzeNestSegment) que si une relance
-// est réellement due, puis referme l'onglet et restaure la séquence de montage.
-function _bannerScanNest(stabSeq, seen, msgs) {
-    try {
-        if (stabSeq.videoTracks.numTracks < 2) return;
-        var v2 = stabSeq.videoTracks[1];
-        var due = [];
-        for (var k = 0; k < v2.clips.numItems; k++) {
-            var w = _warpComp(v2.clips[k]);
-            if (!w) continue;
-            var bkey = "N:" + stabSeq.name + "#" + k;
-            if (_warpAnalyzed(w)) { _bannerClear(bkey, seen); continue; }
-            seen[bkey] = 1;
-            var d = _bannerDecide(bkey);
-            if (d === "due") due.push({ idx: k, key: bkey });
-            else if (d === "giveup-now")
-                msgs.push(stabSeq.name + " #" + k + " : analyse impossible à relancer — laissé tel quel");
-        }
-        if (!due.length) return;
-        var orig = app.project.activeSequence;
-        for (var i = 0; i < due.length; i++) {
-            var rr = _reanalyzeNestSegment(stabSeq, due[i].idx);
-            _bannerDidRelaunch(due[i].key);
-            msgs.push(stabSeq.name + " #" + due[i].idx + " : bandeau bleu détecté → " +
-                (rr === "" ? "analyse relancée" : "ECHEC relance : " + rr));
-        }
-        _closeSequence(stabSeq);
-        if (orig) _activate(orig);
-    } catch (e) {
-        msgs.push("détecteur bandeau (" + stabSeq.name + ") : " + e);
     }
 }
 
@@ -847,20 +773,54 @@ function SW_env() {
     return "Premiere " + app.version + " — " + (app.project ? app.project.name : "aucun projet");
 }
 
-// ---------- détecteur de bandeau bleu v2 (clips à effet direct) ----------
-// Premiere n'expose aucune propriété lisible qui dise « ce Warp attend une analyse » :
-// diags du 2026-10-06, les 32 propriétés sont les mêmes avec et sans bandeau, sauf
-// AnalysisStatusCounter qui prend +500 à chaque analyse terminée. On détecte donc la
-// CAUSE : un trim change la portion de rush du clip → Premiere invalide l'analyse et
-// affiche le bandeau sans la relancer. On mémorise, par séquence, la portion de rush de
-// chaque clip direct ; quand elle change sans que le compteur avance, on relance
-// l'analyse en conservant les réglages du Warp. Un simple déplacement (même portion de
-// rush) n'est pas traité comme une modification.
+// ---------- détecteur de bandeau bleu (par l'image) ----------
+// Premiere n'expose aucune propriété lisible qui dise « ce Warp attend une analyse »
+// (diags du 2026-10-06 : mêmes valeurs avec et sans bandeau ; seul AnalysisStatusCounter
+// bouge, +500 par analyse terminée). En revanche le bandeau est dessiné dans l'image
+// rendue : on exporte une image du milieu de chaque clip stabilisé (exportFramePNG), le
+// panneau y cherche la bande bleue pleine largeur, et on relance l'analyse là où elle
+// persiste. Marche dans tous les cas : réouverture d'un vieux projet, trim, etc.
+//
+// Cycle par clip (clé = piste + nom + position + portion de rush : un clip modifié
+// change de clé et est donc revérifié) :
+//   todo → capture : pas de bande → ok ; bande → suspect
+//   suspect → nouvelle capture après SW_RECHECK_MS : bande et compteur inchangé →
+//     relance (launched) ; compteur qui avance = analyse en cours → on patiente
+//   launched → fin d'analyse (compteur +500) ou SW_LAUNCH_TIMEOUT_MS → todo (contrôle)
+// Les clips que StableWarp vient lui-même de stabiliser démarrent en launched.
 
-var SW_RANGE_EPS = 0.02;    // ~ une demi-image
-var SW_COUNTER_STEP = 500;  // incrément d'AnalysisStatusCounter par analyse terminée
+var SW_BANNER_MAX_TRIES = 2;
+var SW_RECHECK_MS = 15000;
+var SW_LAUNCH_TIMEOUT_MS = 15 * 60000;
+var SW_COUNTER_STEP = 500;   // incrément d'AnalysisStatusCounter par analyse terminée
+var SW_RANGE_EPS = 0.02;     // ~ une demi-image
 
 function _near(a, b) { return Math.abs(a - b) < SW_RANGE_EPS; }
+function _now() { return new Date().getTime(); }
+function _r2(x) { return Math.round(x * 100) / 100; }
+
+// Identité d'un clip hors piste (nom + position + portion de rush).
+function _freshKey(clip) {
+    return clip.name + "|" + _r2(clip.start.seconds) + "|" + _r2(clip.inPoint.seconds) + "|" +
+        _r2(clip.outPoint.seconds);
+}
+
+// Note un clip que StableWarp vient de (re)stabiliser : son analyse tourne déjà, le
+// détecteur le laisse finir au lieu de le prendre pour un bandeau bloqué.
+function _markFresh(clip) {
+    try {
+        var fk = _freshKey(clip);
+        if (!$.global._swFresh) $.global._swFresh = {};
+        $.global._swFresh[fk] = _now();
+        var all = $.global._swBnSeqs || {};
+        for (var sid in all) {
+            if (!all.hasOwnProperty(sid)) continue;
+            for (var k in all[sid].recs) {
+                if (all[sid].recs.hasOwnProperty(k) && k.substr(k.indexOf("|") + 1) === fk) delete all[sid].recs[k];
+            }
+        }
+    } catch (e) {}
+}
 
 // Valeur d'AnalysisStatusCounter (null si absente).
 function _warpCounter(comp) {
@@ -917,8 +877,24 @@ function _relaunchDirect(item, montageSeq, trackIdx) {
     return "";
 }
 
-// Clips à Warp direct (vitesse 100 %, non inversés) de la séquence, avec leur état.
-function _directWarpClips(seq) {
+// Compteur d'analyse d'un nest = somme des compteurs de ses segments (avance de +500 à
+// chaque segment analysé). null si illisible.
+function _nestCounter(stabSeq) {
+    try {
+        if (!stabSeq || stabSeq.videoTracks.numTracks < 2) return null;
+        var v2 = stabSeq.videoTracks[1], sum = 0, any = false;
+        for (var k = 0; k < v2.clips.numItems; k++) {
+            var w = _warpComp(v2.clips[k]);
+            var c = w ? _warpCounter(w) : null;
+            if (c !== null) { sum += c; any = true; }
+        }
+        return any ? sum : null;
+    } catch (e) { return null; }
+}
+
+// Clips stabilisés de la séquence (Warp direct à 100 % ou nest _stab), avec leur clé
+// et leur compteur d'analyse.
+function _bannerClips(seq) {
     var out = [];
     for (var t = 0; t < seq.videoTracks.numTracks; t++) {
         var tr = seq.videoTracks[t];
@@ -926,109 +902,135 @@ function _directWarpClips(seq) {
             var clip = tr.clips[k];
             var pi = null;
             try { pi = clip.projectItem; } catch (eP) {}
-            if (!pi || _isStabName(pi.name)) continue;
-            var spd = 1, rev = false;
-            try { spd = clip.getSpeed(); } catch (eS) {}
-            try { rev = !!clip.isSpeedReversed(); } catch (eR) {}
-            if (Math.abs(spd - 1) > 0.0001 || rev) continue;
-            var wc = _warpComp(clip);
-            if (!wc) continue;
-            out.push({ clip: clip, t: t, name: clip.name,
-                       start: clip.start.seconds, end: clip.end.seconds,
-                       inS: clip.inPoint.seconds, outS: clip.outPoint.seconds,
-                       ctr: _warpCounter(wc) });
+            if (!pi) continue;
+            var nest = "", ctr = null;
+            if (_isStabName(pi.name)) {
+                var stabSeq = _findSequenceByName(pi.name);
+                if (!stabSeq) continue;
+                nest = pi.name;
+                ctr = _nestCounter(stabSeq);
+            } else {
+                var wc = _warpComp(clip);
+                if (!wc) continue;
+                var spd = 1, rev = false;
+                try { spd = clip.getSpeed(); } catch (eS) {}
+                try { rev = !!clip.isSpeedReversed(); } catch (eR) {}
+                if (Math.abs(spd - 1) > 0.0001 || rev) continue; // migration vers nest en cours
+                ctr = _warpCounter(wc);
+            }
+            out.push({ clip: clip, t: t, nest: nest, ctr: ctr, key: t + "|" + _freshKey(clip) });
         }
     }
     return out;
 }
 
-// Associe chaque clip actuel à son état du tick précédent (c.prev) : d'abord à
-// l'identique, puis, pour un clip trimé ou déplacé, au clip de même nom qui partage
-// encore au moins un bord (timeline ou rush), le plus proche d'abord.
-function _matchPrev(cur, prev) {
-    var usedP = {}, i, j;
-    for (i = 0; i < cur.length; i++) {
-        for (j = 0; j < prev.length; j++) {
-            if (usedP[j]) continue;
-            var c = cur[i], p = prev[j];
-            if (c.t === p.t && c.name === p.name && _near(c.start, p.start) &&
-                _near(c.inS, p.inS) && _near(c.outS, p.outS)) { c.prev = p; usedP[j] = 1; break; }
+function _findClip(seq, t, name, start) {
+    try {
+        var tr = seq.videoTracks[t];
+        for (var k = 0; k < tr.clips.numItems; k++) {
+            if (tr.clips[k].name === name && _near(tr.clips[k].start.seconds, start)) return tr.clips[k];
         }
-    }
-    var pairs = [];
-    for (i = 0; i < cur.length; i++) {
-        if (cur[i].prev) continue;
-        for (j = 0; j < prev.length; j++) {
-            if (usedP[j]) continue;
-            var c2 = cur[i], p2 = prev[j];
-            if (c2.name !== p2.name) continue;
-            if (!(_near(c2.start, p2.start) || _near(c2.end, p2.end) ||
-                  _near(c2.inS, p2.inS) || _near(c2.outS, p2.outS))) continue;
-            pairs.push({ i: i, j: j, d: Math.abs(c2.start - p2.start) + Math.abs(c2.end - p2.end) +
-                Math.abs(c2.inS - p2.inS) + Math.abs(c2.outS - p2.outS) + (c2.t === p2.t ? 0 : 1) });
-        }
-    }
-    pairs.sort(function (a, b) { return a.d - b.d; });
-    for (var q = 0; q < pairs.length; q++) {
-        if (cur[pairs[q].i].prev || usedP[pairs[q].j]) continue;
-        cur[pairs[q].i].prev = prev[pairs[q].j];
-        usedP[pairs[q].j] = 1;
-    }
+    } catch (e) {}
+    return null;
 }
 
-// Tick du détecteur pour les clips directs. Premier passage sur une séquence = état
-// de référence (on ne sait rien des bandeaux déjà présents : plan B = bouton manuel).
-function _scanDirectChanges(seq, msgs) {
+// État du détecteur pour une séquence (conservé quand on passe d'une séquence à l'autre).
+function _bnState(seq) {
+    if (!$.global._swBnSeqs) $.global._swBnSeqs = {};
+    var sid = seq.sequenceID;
+    if (!$.global._swBnSeqs[sid]) $.global._swBnSeqs[sid] = { recs: {}, job: null, pos: null };
+    return $.global._swBnSeqs[sid];
+}
+
+// API panneau : prochaine capture à faire. Renvoie "CAPTURE|<chemin sans extension>"
+// ou "" (rien à faire, ou tête de lecture en mouvement : on ne gêne pas le monteur).
+function SW_bannerNext(dir, sep) {
     try {
-        if (!$.global._swFp) $.global._swFp = {};
-        var sid = seq.sequenceID;
-        var cur = _directWarpClips(seq);
-        var prev = $.global._swFp[sid];
-        if (prev) _matchPrev(cur, prev);
-        for (var i = 0; i < cur.length; i++) {
-            var c = cur[i], p = c.prev;
-            c.dirty = false; c.dirtyCtr = null; c.stable = 0; c.tries = 0;
-            if (!p) continue; // nouveau clip : état de référence
-            if (!_near(c.inS, p.inS) || !_near(c.outS, p.outS)) {
-                c.dirty = true;
-                c.dirtyCtr = p.dirty ? p.dirtyCtr : p.ctr;
-            } else {
-                c.dirty = p.dirty; c.dirtyCtr = p.dirtyCtr;
-                c.stable = p.stable + 1; c.tries = p.tries;
+        if (!app.project || !app.project.activeSequence) return "";
+        var seq = app.project.activeSequence;
+        if (_isStabName(seq.name)) return "";
+        var g = _bnState(seq);
+        g.job = null;
+        var pos = null;
+        try { pos = seq.getPlayerPosition().seconds; } catch (eP) {}
+        var moving = (g.pos !== null && pos !== g.pos);
+        g.pos = pos;
+        if (moving) return "";
+
+        var now = _now(), fresh = $.global._swFresh || {};
+        var list = _bannerClips(seq), recs = {}, pickTodo = null, pickSuspect = null;
+        for (var i = 0; i < list.length; i++) {
+            var c = list[i], r = g.recs[c.key];
+            if (!r) {
+                var fk = fresh[_freshKey(c.clip)];
+                r = (fk && now - fk < SW_LAUNCH_TIMEOUT_MS) ?
+                    { state: "launched", at: fk, ctr: c.ctr, tries: 0, fails: 0 } :
+                    { state: "todo", tries: 0, fails: 0 };
             }
-            if (!c.dirty) continue;
-            // une analyse complète a eu lieu depuis la modif (Premiere ou le monteur)
-            if (c.ctr !== null && c.dirtyCtr !== null && c.ctr - c.dirtyCtr >= SW_COUNTER_STEP) {
-                c.dirty = false;
-                continue;
-            }
-            if (c.stable < 1) continue; // trim peut-être en cours : attendre un tick stable
-            if (c.tries >= SW_BANNER_MAX_TRIES) continue;
-            var rr = _relaunchDirect(c.clip, seq, c.t);
-            c.tries++;
-            if (rr === "") {
-                c.dirty = false;
-                msgs.push(c.name + " : portion de rush modifiée → analyse relancée");
-            } else {
-                msgs.push(c.name + " : ECHEC relance de l'analyse : " + rr);
-                if (c.tries >= SW_BANNER_MAX_TRIES) {
-                    msgs.push(c.name + " : relance abandonnée après " + SW_BANNER_MAX_TRIES +
-                        " essais — utilise « Relancer l'analyse de la sélection »");
-                }
-            }
+            r.t = c.t; r.nest = c.nest; r.name = c.clip.name; r.cur = c.ctr;
+            r.start = c.clip.start.seconds; r.end = c.clip.end.seconds;
+            if (r.state === "launched" &&
+                ((r.ctr !== null && c.ctr !== null && c.ctr - r.ctr >= SW_COUNTER_STEP) ||
+                 now - r.at > SW_LAUNCH_TIMEOUT_MS)) r.state = "todo"; // fini : on contrôle
+            recs[c.key] = r;
+            if (!pickSuspect && r.state === "suspect" && now - r.at >= SW_RECHECK_MS) pickSuspect = c.key;
+            if (!pickTodo && r.state === "todo") pickTodo = c.key;
         }
-        var snap = [];
-        for (var s = 0; s < cur.length; s++) {
-            var x = cur[s];
-            snap.push({ t: x.t, name: x.name, start: x.start, end: x.end, inS: x.inS, outS: x.outS,
-                        ctr: x.ctr, dirty: x.dirty, dirtyCtr: x.dirtyCtr, stable: x.stable, tries: x.tries });
+        g.recs = recs; // les clips disparus sont oubliés
+        var key = pickSuspect || pickTodo;
+        if (!key) return "";
+
+        var rec = recs[key], st = seq.getSettings();
+        var tc = _t((rec.start + rec.end) / 2).getFormatted(st.videoFrameRate, st.videoDisplayFormat);
+        app.enableQE();
+        var qeSeq = qe.project.getActiveSequence();
+        if (!qeSeq) return "";
+        var base = dir + sep + "sw-bandeau-" + now;
+        qeSeq.exportFramePNG(tc, base);
+        g.job = key;
+        return "CAPTURE|" + base;
+    } catch (e) { return ""; }
+}
+
+// API panneau : verdict de l'image de la dernière capture (1 = bande bleue, 0 = rien,
+// -1 = image illisible). Relance l'analyse si le bandeau persiste. Renvoie un message
+// à logguer, ou "".
+function SW_bannerResult(hasBand) {
+    try {
+        var seq = app.project.activeSequence;
+        if (!seq) return "";
+        var g = _bnState(seq), key = g.job;
+        g.job = null;
+        var r = key ? g.recs[key] : null;
+        if (!r) return "";
+        hasBand = Number(hasBand);
+        if (hasBand < 0) {
+            if (++r.fails >= 3) { r.state = "ok"; return r.name + " : capture d'image impossible, clip non surveillé"; }
+            return "";
         }
-        $.global._swFp[sid] = snap;
-        $.global._swFpErr = "";
-    } catch (e) {
-        var m = "détecteur bandeau (clips directs) : " + e;
-        if ($.global._swFpErr !== m) { $.global._swFpErr = m; msgs.push(m); } // une fois, pas à chaque tick
-    }
+        if (!hasBand) { r.state = "ok"; return ""; }
+        if (r.state === "todo") { r.state = "suspect"; r.at = _now(); r.ctr = r.cur; return ""; }
+        if (r.state !== "suspect") return "";
+        if (r.cur !== r.ctr) { r.at = _now(); r.ctr = r.cur; return ""; } // analyse en cours
+        if (r.tries >= SW_BANNER_MAX_TRIES) {
+            r.state = "gaveup";
+            return r.name + " : bandeau bleu toujours là après " + SW_BANNER_MAX_TRIES +
+                " relances — laissé tel quel (clique Analyser à la main)";
+        }
+        var clip = _findClip(seq, r.t, r.name, r.start);
+        if (!clip) return "";
+        $.global._swMontageSeq = seq;
+        var rr = r.nest ? _reanalyzeNestFor(clip, r.nest) : _relaunchDirect(clip, seq, r.t);
+        var ok = r.nest ? rr.indexOf("ECHEC") !== 0 : rr === "";
+        r.tries++;
+        r.at = _now();
+        if (ok) {
+            r.state = "launched";
+            r.ctr = r.nest ? _nestCounter(_findSequenceByName(r.nest)) : _warpCounter(_warpComp(clip));
+        }
+        _activate(seq);
+        return r.name + " : bandeau bleu détecté → " + (ok ? "analyse relancée" : "ECHEC relance : " + rr);
+    } catch (e) { return "détecteur bandeau : " + e; }
 }
 
 // Relance l'analyse des segments du nest qui couvrent la portion de rush de ce clip.
@@ -1068,10 +1070,16 @@ function SW_reanalyzeSelection() {
         var item = picks[i].item, lbl = item.name + " : ";
         try {
             var pi = item.projectItem;
-            if (pi && _isStabName(pi.name)) { results.push(lbl + _reanalyzeNestFor(item, pi.name)); continue; }
+            if (pi && _isStabName(pi.name)) {
+                var rn = _reanalyzeNestFor(item, pi.name);
+                results.push(lbl + rn);
+                if (rn.indexOf("ECHEC") !== 0) _markFresh(item);
+                continue;
+            }
             if (!_warpComp(item)) { results.push(lbl + "ignoré (pas d'effet Stabilisation)"); continue; }
             var rr = _relaunchDirect(item, seq, picks[i].trackIdx);
             results.push(lbl + (rr === "" ? "analyse relancée" : "ECHEC " + rr));
+            if (rr === "") _markFresh(item);
         } catch (e) { results.push(lbl + "ECHEC " + e); }
     }
     _activate(seq);
@@ -1120,9 +1128,6 @@ function _diagWarpComp(item, trackIdx) {
         try { val = _diagVal(props[i].getValue()); } catch (eV) { val = "getValue ECHEC (" + eV + ")"; }
         out.push("    [" + i + "] " + nm + " = " + val);
     }
-    var verdict = "?";
-    try { verdict = _warpAnalyzed(wc) ? "ANALYSÉ → aucune relance" : "NON analysé → relance prévue"; } catch (eW) {}
-    out.push("  heuristique actuelle _warpAnalyzed → " + verdict);
     return out.join("\n");
 }
 
@@ -1202,27 +1207,6 @@ function _warpComp(item) {
         }
     } catch (e) {}
     return null;
-}
-
-// ATTENTION : démenti par les diags du 2026-10-06 sur des clips directs ([1] vaut false
-// même avec le bandeau) → n'est plus utilisé que pour les segments de nest, et les
-// clips directs passent par _scanDirectChanges.
-// État d'analyse — lecture passive (pas besoin d'activer le nest).
-// On lit deux booléens en tête de la liste de propriétés du Warp :
-//   [0] = true  → données d'analyse présentes EN SESSION (faux après réouverture) ;
-//   [1] = false → analyse faite OU EN COURS (true = vraie analyse en attente = bandeau).
-// Analysé ⟺ [0]==true OU [1]==false. Conséquence clé : une analyse qui tourne a
-// [1]==false → vue comme « analysée » → jamais relancée (pas de garde-fou compteur
-// nécessaire ; le compteur reste de toute façon figé pendant l'analyse). Le NOM
-// « Echelle auto (x %) » est ignoré : c'est la seule donnée à « hydrater », donc la
-// seule qui ment dans un nest fermé. Les VALEURS, elles, sont fiables.
-function _warpAnalyzed(comp) {
-    try {
-        var props = comp.properties;
-        var p0 = props[0].getValue();
-        var p1 = props[1].getValue();
-        return (p0 === true) || (p1 === false);
-    } catch (e) { return true; } // illisible → considéré analysé, on ne touche à rien
 }
 
 // Relance l'analyse d'un segment V2 d'un nest : retire le Warp (segment = Warp seul)

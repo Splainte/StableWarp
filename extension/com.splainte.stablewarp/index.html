@@ -70,7 +70,7 @@
   </div>
 
 <script>
-  var SW_VERSION = '1.1.3-test2';
+  var SW_VERSION = '1.1.3-test3';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -187,12 +187,103 @@
 
   function watchTick() {
     if (busy) return;
-    var restab = document.getElementById('watch').checked ? 1 : 0;
-    var banner = document.getElementById('banner').checked ? 1 : 0;
-    if (!restab && !banner) return;
-    evalJSX('SW_watchTick(' + restab + ', ' + banner + ')', function (res) {
-      if (res && res !== 'EvalScript error.') log(res); // ECHEC en rouge ligne par ligne
+    if (document.getElementById('watch').checked) {
+      evalJSX('SW_watchTick()', function (res) {
+        if (res && res !== 'EvalScript error.') log(res); // ECHEC en rouge ligne par ligne
+      });
+    }
+    if (document.getElementById('banner').checked) bannerTick();
+  }
+
+  // ---- détecteur de bandeau bleu : capture d'une image par clip stabilisé ----
+  // Le JSX choisit le clip à contrôler et exporte l'image ; ici on attend le fichier,
+  // on y cherche la bande bleue et on renvoie le verdict (une capture à la fois).
+
+  var bannerJob = false;
+
+  function bannerTick() {
+    if (bannerJob) return;
+    var os = require('os'), path = require('path'), fs = require('fs');
+    var dir = path.join(os.tmpdir(), 'stablewarp');
+    try { if (!fs.existsSync(dir)) fs.mkdirSync(dir); } catch (e) { return; }
+    bannerJob = true;
+    evalJSX('SW_bannerNext(' + JSON.stringify(dir) + ', ' + JSON.stringify(path.sep) + ')', function (res) {
+      var m = /^CAPTURE\|(.+)$/.exec(res || '');
+      if (!m) { bannerJob = false; return; }
+      waitForPng(m[1], function (file) {
+        if (!file) { bannerVerdict(-1); return; }
+        detectBand(file, function (v) {
+          try { fs.unlinkSync(file); } catch (e) {}
+          bannerVerdict(v);
+        });
+      });
     });
+  }
+
+  function bannerVerdict(v) {
+    evalJSX('SW_bannerResult(' + v + ')', function (msg) {
+      if (msg && msg !== 'EvalScript error.') log(msg);
+      bannerJob = false;
+    });
+  }
+
+  // L'export est différé et Premiere ajoute parfois lui-même « .png » : on attend qu'un
+  // des deux fichiers existe et que sa taille ne bouge plus (15 s max).
+  function waitForPng(base, cb) {
+    var fs = require('fs'), tries = 0, lastSize = -1;
+    (function poll() {
+      var cands = [base + '.png', base];
+      for (var i = 0; i < cands.length; i++) {
+        try {
+          var size = fs.statSync(cands[i]).size;
+          if (size > 0 && size === lastSize) { cb(cands[i]); return; }
+          lastSize = size;
+          break;
+        } catch (e) {}
+      }
+      if (++tries > 37) { cb(null); return; }
+      setTimeout(poll, 400);
+    })();
+  }
+
+  // 1 = bandeau, 0 = rien, -1 = image illisible
+  function detectBand(file, cb) {
+    var img = new Image();
+    img.onload = function () {
+      try {
+        var W = 384, H = Math.max(1, Math.round(W * img.height / img.width));
+        var cv = document.createElement('canvas');
+        cv.width = W; cv.height = H;
+        var cx = cv.getContext('2d');
+        cx.drawImage(img, 0, 0, W, H);
+        cb(hasBanner(cx.getImageData(0, 0, W, H).data, W, H));
+      } catch (e) { cb(-1); }
+    };
+    img.onerror = function () { cb(-1); };
+    try { img.src = 'data:image/png;base64,' + require('fs').readFileSync(file).toString('base64'); }
+    catch (e) { cb(-1); }
+  }
+
+  // Bande bleue pleine largeur (bandeau d'analyse du Warp) : sur les bords gauche et
+  // droit (le texte est centré), une suite de lignes presque entièrement « bleu pur »,
+  // de 1,5 à 12 % de la hauteur, centrée verticalement (35-65 %). Seuils réglés sur une
+  // vraie capture : le bandeau est semi-transparent, de (4,54,210) sur fond noir à
+  // (32,86,255) sur fond clair.
+  function hasBanner(d, W, H) {
+    var best = 0, bestStart = 0, run = 0;
+    for (var y = 0; y < H; y++) {
+      var n = 0, tot = 0;
+      for (var x = 0; x < W; x++) {
+        if (x >= W * 0.2 && x < W * 0.8) continue;
+        var i = (y * W + x) * 4, r = d[i], g = d[i + 1], b = d[i + 2];
+        tot++;
+        if (b >= 160 && r <= 80 && g <= 140 && b - g >= 80 && b - r >= 120) n++;
+      }
+      run = (n / tot > 0.9) ? run + 1 : 0;
+      if (run > best) { best = run; bestStart = y - run + 1; }
+    }
+    var h = best / H, c = (bestStart + best / 2) / H;
+    return (h >= 0.015 && h <= 0.12 && c >= 0.35 && c <= 0.65) ? 1 : 0;
   }
 
   function _setState(id, on) {

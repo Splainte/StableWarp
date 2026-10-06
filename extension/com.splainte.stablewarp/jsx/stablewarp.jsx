@@ -565,24 +565,18 @@ function _stabilizeOne(item, marges, trackIdx) {
 
 // ---------- API panneau ----------
 
-function SW_stabilizeSelection(marges) {
-    if (!app.project) return "ECHEC aucun projet ouvert";
-    var seq = app.project.activeSequence;
-    if (!seq) return "ECHEC aucune séquence active";
-    marges = Number(marges) || 0;
-
+// Clips vidéo sélectionnés AVEC leur piste ([{item, trackIdx}]), en balayant les pistes
+// et en retenant les clips sélectionnés (isSelected). Sans la piste, l'effet direct
+// pouvait se poser sur un clip identique aligné sur une piste inférieure (« celui
+// d'en dessous »). Repli sur getSelection (trackIdx -1) si le balayage n'aboutit pas
+// au même compte — jamais pire que le comportement historique.
+function _selectedVideoPicks(seq) {
     var sel = seq.getSelection();
     var selVideo = 0;
     for (var i = 0; i < sel.length; i++) {
         if (sel[i].mediaType === "Video") selVideo++;
     }
-    if (selVideo === 0) return "ECHEC sélectionne au moins un clip vidéo dans la timeline";
-
-    // On repère chaque clip vidéo sélectionné AVEC sa piste, en balayant les pistes et
-    // en retenant les clips sélectionnés (isSelected). Sans la piste, l'effet direct
-    // pouvait se poser sur un clip identique aligné sur une piste inférieure (« celui
-    // d'en dessous »). Repli sur getSelection (sans piste) si le balayage n'aboutit pas
-    // au même compte — jamais pire que le comportement historique.
+    if (selVideo === 0) return [];
     var picks = [];
     var scanOk = true;
     try {
@@ -602,6 +596,17 @@ function SW_stabilizeSelection(marges) {
             if (sel[i2].mediaType === "Video") picks.push({ item: sel[i2], trackIdx: -1 });
         }
     }
+    return picks;
+}
+
+function SW_stabilizeSelection(marges) {
+    if (!app.project) return "ECHEC aucun projet ouvert";
+    var seq = app.project.activeSequence;
+    if (!seq) return "ECHEC aucune séquence active";
+    marges = Number(marges) || 0;
+
+    var picks = _selectedVideoPicks(seq);
+    if (!picks.length) return "ECHEC sélectionne au moins un clip vidéo dans la timeline";
 
     $.global._swMontageSeq = seq;
     var results = [];
@@ -781,32 +786,15 @@ function SW_watchTick(restab, banner) {
                             msgs.push("(pas de nouvelle tentative tant que la vitesse de ce clip ne rechange pas)");
                         }
                     }
-                    continue; // la migration repose un Warp neuf : pas de détection de bandeau ce tick
-                }
-
-                // bandeau bleu sur une stab directe valide (vitesse 100 %, non inversée)
-                if (banner && Math.abs(spd - 1) < 0.0001 && !rev) {
-                    var wc = _warpComp(clip);
-                    if (!wc) continue;
-                    var bkey = "D:" + t + ":" + clip.name + "@" + clip.start.seconds.toFixed(2);
-                    if (_warpAnalyzed(wc)) { _bannerClear(bkey, seen); continue; }
-                    seen[bkey] = 1;
-                    var d = _bannerDecide(bkey);
-                    if (d === "due") {
-                        var rm = _removeWarpDirect(clip, seq, t);
-                        var add = (rm === "") ? _applyWarpDirect(clip, seq, t) : rm;
-                        _bannerDidRelaunch(bkey);
-                        msgs.push(clip.name + " : bandeau bleu détecté → " +
-                            (add === "" ? "analyse relancée" : "ECHEC relance : " + add));
-                    } else if (d === "giveup-now") {
-                        msgs.push(clip.name + " : analyse impossible à relancer après " +
-                            SW_BANNER_MAX_TRIES + " essais — laissé tel quel");
-                    }
+                    continue; // la migration repose un Warp neuf
                 }
             }
         }
 
-        // purge des entrées de bandeau qui ne correspondent plus à aucun clip présent
+        // clips à effet direct : bandeau = portion de rush modifiée depuis l'analyse
+        if (banner) _scanDirectChanges(seq, msgs);
+
+        // purge des entrées de bandeau (nests) qui ne correspondent plus à aucun clip présent
         for (var pk in $.global._swBanner) {
             if ($.global._swBanner.hasOwnProperty(pk) && !seen[pk]) delete $.global._swBanner[pk];
         }
@@ -857,6 +845,237 @@ function _bannerScanNest(stabSeq, seen, msgs) {
 
 function SW_env() {
     return "Premiere " + app.version + " — " + (app.project ? app.project.name : "aucun projet");
+}
+
+// ---------- détecteur de bandeau bleu v2 (clips à effet direct) ----------
+// Premiere n'expose aucune propriété lisible qui dise « ce Warp attend une analyse » :
+// diags du 2026-10-06, les 32 propriétés sont les mêmes avec et sans bandeau, sauf
+// AnalysisStatusCounter qui prend +500 à chaque analyse terminée. On détecte donc la
+// CAUSE : un trim change la portion de rush du clip → Premiere invalide l'analyse et
+// affiche le bandeau sans la relancer. On mémorise, par séquence, la portion de rush de
+// chaque clip direct ; quand elle change sans que le compteur avance, on relance
+// l'analyse en conservant les réglages du Warp. Un simple déplacement (même portion de
+// rush) n'est pas traité comme une modification.
+
+var SW_RANGE_EPS = 0.02;    // ~ une demi-image
+var SW_COUNTER_STEP = 500;  // incrément d'AnalysisStatusCounter par analyse terminée
+
+function _near(a, b) { return Math.abs(a - b) < SW_RANGE_EPS; }
+
+// Valeur d'AnalysisStatusCounter (null si absente).
+function _warpCounter(comp) {
+    try {
+        var props = comp.properties;
+        for (var i = props.numItems - 1; i >= 0; i--) {
+            if (props[i].displayName === "AnalysisStatusCounter") return Number(props[i].getValue()) || 0;
+        }
+    } catch (e) {}
+    return null;
+}
+
+// Réglages du Warp (propriétés nommées, hors compteur interne).
+function _snapWarpSettings(comp) {
+    var out = [];
+    if (!comp) return out;
+    try {
+        var props = comp.properties;
+        for (var i = 0; i < props.numItems; i++) {
+            var nm = "";
+            try { nm = props[i].displayName; } catch (eN) {}
+            if (!nm || nm === "AnalysisStatusCounter") continue;
+            try { out.push({ i: i, n: nm, v: props[i].getValue() }); } catch (eV) {}
+        }
+    } catch (e) {}
+    return out;
+}
+
+// Ne réécrit que les valeurs qui diffèrent du Warp neuf. Le nom doit correspondre :
+// « Echelle auto (x %) », calculé par l'analyse, est ainsi ignoré.
+function _restoreWarpSettings(comp, snap) {
+    if (!comp) return;
+    try {
+        var props = comp.properties;
+        for (var s = 0; s < snap.length; s++) {
+            try {
+                var p = props[snap[s].i];
+                if (p.displayName !== snap[s].n) continue;
+                if (p.getValue() !== snap[s].v) p.setValue(snap[s].v, true);
+            } catch (eP) {}
+        }
+    } catch (e) {}
+}
+
+// Relance l'analyse d'un Warp direct : retrait puis repose (l'ajout redéclenche
+// l'analyse), en recopiant les réglages du monteur. "" si OK, message sinon.
+function _relaunchDirect(item, montageSeq, trackIdx) {
+    var snap = _snapWarpSettings(_warpComp(item));
+    var rm = _removeWarpDirect(item, montageSeq, trackIdx);
+    if (rm !== "") return rm;
+    var add = _applyWarpDirect(item, montageSeq, trackIdx);
+    if (add !== "") return add;
+    _restoreWarpSettings(_warpComp(item), snap);
+    return "";
+}
+
+// Clips à Warp direct (vitesse 100 %, non inversés) de la séquence, avec leur état.
+function _directWarpClips(seq) {
+    var out = [];
+    for (var t = 0; t < seq.videoTracks.numTracks; t++) {
+        var tr = seq.videoTracks[t];
+        for (var k = 0; k < tr.clips.numItems; k++) {
+            var clip = tr.clips[k];
+            var pi = null;
+            try { pi = clip.projectItem; } catch (eP) {}
+            if (!pi || _isStabName(pi.name)) continue;
+            var spd = 1, rev = false;
+            try { spd = clip.getSpeed(); } catch (eS) {}
+            try { rev = !!clip.isSpeedReversed(); } catch (eR) {}
+            if (Math.abs(spd - 1) > 0.0001 || rev) continue;
+            var wc = _warpComp(clip);
+            if (!wc) continue;
+            out.push({ clip: clip, t: t, name: clip.name,
+                       start: clip.start.seconds, end: clip.end.seconds,
+                       inS: clip.inPoint.seconds, outS: clip.outPoint.seconds,
+                       ctr: _warpCounter(wc) });
+        }
+    }
+    return out;
+}
+
+// Associe chaque clip actuel à son état du tick précédent (c.prev) : d'abord à
+// l'identique, puis, pour un clip trimé ou déplacé, au clip de même nom qui partage
+// encore au moins un bord (timeline ou rush), le plus proche d'abord.
+function _matchPrev(cur, prev) {
+    var usedP = {}, i, j;
+    for (i = 0; i < cur.length; i++) {
+        for (j = 0; j < prev.length; j++) {
+            if (usedP[j]) continue;
+            var c = cur[i], p = prev[j];
+            if (c.t === p.t && c.name === p.name && _near(c.start, p.start) &&
+                _near(c.inS, p.inS) && _near(c.outS, p.outS)) { c.prev = p; usedP[j] = 1; break; }
+        }
+    }
+    var pairs = [];
+    for (i = 0; i < cur.length; i++) {
+        if (cur[i].prev) continue;
+        for (j = 0; j < prev.length; j++) {
+            if (usedP[j]) continue;
+            var c2 = cur[i], p2 = prev[j];
+            if (c2.name !== p2.name) continue;
+            if (!(_near(c2.start, p2.start) || _near(c2.end, p2.end) ||
+                  _near(c2.inS, p2.inS) || _near(c2.outS, p2.outS))) continue;
+            pairs.push({ i: i, j: j, d: Math.abs(c2.start - p2.start) + Math.abs(c2.end - p2.end) +
+                Math.abs(c2.inS - p2.inS) + Math.abs(c2.outS - p2.outS) + (c2.t === p2.t ? 0 : 1) });
+        }
+    }
+    pairs.sort(function (a, b) { return a.d - b.d; });
+    for (var q = 0; q < pairs.length; q++) {
+        if (cur[pairs[q].i].prev || usedP[pairs[q].j]) continue;
+        cur[pairs[q].i].prev = prev[pairs[q].j];
+        usedP[pairs[q].j] = 1;
+    }
+}
+
+// Tick du détecteur pour les clips directs. Premier passage sur une séquence = état
+// de référence (on ne sait rien des bandeaux déjà présents : plan B = bouton manuel).
+function _scanDirectChanges(seq, msgs) {
+    try {
+        if (!$.global._swFp) $.global._swFp = {};
+        var sid = seq.sequenceID;
+        var cur = _directWarpClips(seq);
+        var prev = $.global._swFp[sid];
+        if (prev) _matchPrev(cur, prev);
+        for (var i = 0; i < cur.length; i++) {
+            var c = cur[i], p = c.prev;
+            c.dirty = false; c.dirtyCtr = null; c.stable = 0; c.tries = 0;
+            if (!p) continue; // nouveau clip : état de référence
+            if (!_near(c.inS, p.inS) || !_near(c.outS, p.outS)) {
+                c.dirty = true;
+                c.dirtyCtr = p.dirty ? p.dirtyCtr : p.ctr;
+            } else {
+                c.dirty = p.dirty; c.dirtyCtr = p.dirtyCtr;
+                c.stable = p.stable + 1; c.tries = p.tries;
+            }
+            if (!c.dirty) continue;
+            // une analyse complète a eu lieu depuis la modif (Premiere ou le monteur)
+            if (c.ctr !== null && c.dirtyCtr !== null && c.ctr - c.dirtyCtr >= SW_COUNTER_STEP) {
+                c.dirty = false;
+                continue;
+            }
+            if (c.stable < 1) continue; // trim peut-être en cours : attendre un tick stable
+            if (c.tries >= SW_BANNER_MAX_TRIES) continue;
+            var rr = _relaunchDirect(c.clip, seq, c.t);
+            c.tries++;
+            if (rr === "") {
+                c.dirty = false;
+                msgs.push(c.name + " : portion de rush modifiée → analyse relancée");
+            } else {
+                msgs.push(c.name + " : ECHEC relance de l'analyse : " + rr);
+                if (c.tries >= SW_BANNER_MAX_TRIES) {
+                    msgs.push(c.name + " : relance abandonnée après " + SW_BANNER_MAX_TRIES +
+                        " essais — utilise « Relancer l'analyse de la sélection »");
+                }
+            }
+        }
+        var snap = [];
+        for (var s = 0; s < cur.length; s++) {
+            var x = cur[s];
+            snap.push({ t: x.t, name: x.name, start: x.start, end: x.end, inS: x.inS, outS: x.outS,
+                        ctr: x.ctr, dirty: x.dirty, dirtyCtr: x.dirtyCtr, stable: x.stable, tries: x.tries });
+        }
+        $.global._swFp[sid] = snap;
+        $.global._swFpErr = "";
+    } catch (e) {
+        var m = "détecteur bandeau (clips directs) : " + e;
+        if ($.global._swFpErr !== m) { $.global._swFpErr = m; msgs.push(m); } // une fois, pas à chaque tick
+    }
+}
+
+// Relance l'analyse des segments du nest qui couvrent la portion de rush de ce clip.
+function _reanalyzeNestFor(item, nestName) {
+    var stabSeq = _findSequenceByName(nestName);
+    if (!stabSeq) return "ECHEC séquence " + nestName + " introuvable";
+    if (stabSeq.videoTracks.numTracks < 2) return "ECHEC structure inattendue dans " + nestName;
+    var rng = _sourceRange(item);
+    var v2 = stabSeq.videoTracks[1];
+    var idx = [];
+    for (var k = 0; k < v2.clips.numItems; k++) {
+        if (rng.inSec < v2.clips[k].end.seconds && rng.outSec > v2.clips[k].start.seconds) idx.push(k);
+    }
+    if (!idx.length) return "ECHEC aucun segment stabilisé ne couvre ce clip";
+    var orig = app.project.activeSequence;
+    var errs = [];
+    for (var i = 0; i < idx.length; i++) {
+        var r = _reanalyzeNestSegment(stabSeq, idx[i]);
+        if (r !== "") errs.push("#" + idx[i] + " " + r);
+    }
+    _closeSequence(stabSeq);
+    if (orig) _activate(orig);
+    return errs.length ? "ECHEC " + errs.join(" ; ") :
+        "analyse relancée (" + idx.length + " segment" + (idx.length > 1 ? "s" : "") + " du nest)";
+}
+
+// API panneau : relance l'analyse des clips sélectionnés (plan B manuel).
+function SW_reanalyzeSelection() {
+    if (!app.project) return "ECHEC aucun projet ouvert";
+    var seq = app.project.activeSequence;
+    if (!seq) return "ECHEC aucune séquence active";
+    var picks = _selectedVideoPicks(seq);
+    if (!picks.length) return "ECHEC sélectionne au moins un clip vidéo dans la timeline";
+    $.global._swMontageSeq = seq;
+    var results = [];
+    for (var i = 0; i < picks.length; i++) {
+        var item = picks[i].item, lbl = item.name + " : ";
+        try {
+            var pi = item.projectItem;
+            if (pi && _isStabName(pi.name)) { results.push(lbl + _reanalyzeNestFor(item, pi.name)); continue; }
+            if (!_warpComp(item)) { results.push(lbl + "ignoré (pas d'effet Stabilisation)"); continue; }
+            var rr = _relaunchDirect(item, seq, picks[i].trackIdx);
+            results.push(lbl + (rr === "" ? "analyse relancée" : "ECHEC " + rr));
+        } catch (e) { results.push(lbl + "ECHEC " + e); }
+    }
+    _activate(seq);
+    return results.join("\n");
 }
 
 // ---------- diagnostic bandeau bleu (LECTURE SEULE, ne modifie rien) ----------
@@ -940,7 +1159,10 @@ function _warpComp(item) {
     return null;
 }
 
-// État d'analyse — LECTURE PASSIVE FIABLE (pas besoin d'activer le nest).
+// ATTENTION : démenti par les diags du 2026-10-06 sur des clips directs ([1] vaut false
+// même avec le bandeau) → n'est plus utilisé que pour les segments de nest, et les
+// clips directs passent par _scanDirectChanges.
+// État d'analyse — lecture passive (pas besoin d'activer le nest).
 // On lit deux booléens en tête de la liste de propriétés du Warp :
 //   [0] = true  → données d'analyse présentes EN SESSION (faux après réouverture) ;
 //   [1] = false → analyse faite OU EN COURS (true = vraie analyse en attente = bandeau).

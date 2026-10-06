@@ -13,10 +13,10 @@
              background:#2d6cdf; color:#fff; border:none; border-radius:6px; cursor:pointer; }
   #stabBtn:hover { background:#3b7af0; }
   #stabBtn:disabled { background:#444; color:#999; cursor:default; }
-  #unstabBtn { display:block; width:100%; margin-top:8px; padding:7px; font-size:11px;
+  #unstabBtn, #reanBtn { display:block; width:100%; margin-top:8px; padding:7px; font-size:11px;
                background:transparent; color:#999; border:1px solid #4a4a4a;
                border-radius:6px; cursor:pointer; }
-  #unstabBtn:hover { color:#ddd; border-color:#666; }
+  #unstabBtn:hover, #reanBtn:hover { color:#ddd; border-color:#666; }
   #diagBtn { display:block; width:100%; margin-top:8px; padding:7px; font-size:11px;
              background:transparent; color:#c8a24a; border:1px dashed #6a5a2a;
              border-radius:6px; cursor:pointer; }
@@ -46,6 +46,7 @@
 
   <button id="stabBtn" onclick="stabilize()">Stabiliser la sélection</button>
   <button id="unstabBtn" onclick="unstabilize()">Dé-stabiliser (restaurer le rush d'origine)</button>
+  <button id="reanBtn" onclick="reanalyze()">Relancer l'analyse de la sélection</button>
   <button id="diagBtn" onclick="diag()">🔬 Diagnostic bandeau (build test)</button>
 
   <div class="row">
@@ -68,7 +69,7 @@
   </div>
 
 <script>
-  var SW_VERSION = '1.1.2-diag';
+  var SW_VERSION = '1.1.3-test';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -116,6 +117,16 @@
     busy = true;
     log('▶ Dé-stabilisation de la sélection', 'info');
     evalJSX('SW_unstabilizeSelection()', function (res) {
+      log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
+      busy = false;
+    });
+  }
+
+  function reanalyze() {
+    if (busy) return;
+    busy = true;
+    log('▶ Relance de l’analyse de la sélection', 'info');
+    evalJSX('SW_reanalyzeSelection()', function (res) {
       log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
       busy = false;
     });

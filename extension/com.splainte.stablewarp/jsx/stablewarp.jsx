@@ -1176,6 +1176,34 @@ function SW_captureSelected(dir, sep) {
     return out.join("\n");
 }
 
+// TEST : que renvoie Sequence.isDoneAnalyzingForVideoEffects() (API officielle, à
+// l'échelle de la séquence) selon qu'il y a un bandeau en attente, une analyse en
+// cours ou rien ? Pour la séquence active et chaque nest _stab, plus les méthodes
+// DOM/QE de la séquence (pistes d'exploration). Lecture seule.
+function SW_testAnalysisApi() {
+    if (!app.project) return "ECHEC aucun projet ouvert";
+    var seq = app.project.activeSequence;
+    if (!seq) return "ECHEC aucune séquence active";
+    function st(s) {
+        try { return s.isDoneAnalyzingForVideoEffects() ? "terminé (true)" : "PAS terminé (false)"; }
+        catch (e) { return "erreur : " + e; }
+    }
+    var out = ["isDoneAnalyzingForVideoEffects :", "  séquence active « " + seq.name + " » → " + st(seq)];
+    for (var i = 0; i < app.project.sequences.numSequences; i++) {
+        var s = app.project.sequences[i];
+        if (_isStabName(s.name)) out.push("  nest « " + s.name + " » → " + st(s));
+    }
+    function names(o) {
+        var r = [];
+        try { var ms = o.reflect.methods; for (var m = 0; m < ms.length; m++) r.push(String(ms[m].name)); }
+        catch (e) { return "illisible : " + e; }
+        return r.join(", ");
+    }
+    out.push("Méthodes DOM de la séquence : " + names(seq));
+    try { app.enableQE(); out.push("Méthodes QE de la séquence : " + names(qe.project.getActiveSequence())); } catch (eQ) {}
+    return out.join("\n");
+}
+
 // API panneau : diagnostic des clips vidéo sélectionnés (rien n'est modifié).
 function SW_diagWarp() {
     if (!app.project) return "ECHEC aucun projet ouvert";

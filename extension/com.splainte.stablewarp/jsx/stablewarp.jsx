@@ -785,8 +785,9 @@ function SW_env() {
 //      (SW_BATCH au plus à la fois : Premiere plante au-delà de ~5 analyses)
 //   3. nest (ralenti) : le flux optique rend aussi la barre rouge, et la barre d'un nest
 //      fermé n'est pas fiable → une capture d'image confirme le bandeau avant la relance
-//   4. encore rouge APRÈS la ré-analyse (autre effet lourd, Neat Video…) → une capture
-//      d'image tranche : bandeau → nouvelle relance ; pas de bandeau → on laisse
+//   4. rouge ambigu (autre effet lourd sur le clip, clip superposé sur une autre piste,
+//      nest) ou encore rouge APRÈS la ré-analyse → une capture d'image tranche :
+//      bandeau → relance ; pas de bandeau → on laisse ce clip tranquille
 // Un clip modifié change de clé (piste + nom + position + portion de rush) et repart
 // de zéro.
 
@@ -954,6 +955,26 @@ function _bnState(seq) {
     return $.global._swBnSeqs[sid];
 }
 
+// Un autre clip vidéo occupe-t-il [s, e] sur une autre piste ?
+function _stacked(seq, t, s, e) {
+    for (var t2 = 0; t2 < seq.videoTracks.numTracks; t2++) {
+        if (t2 === t) continue;
+        var tr = seq.videoTracks[t2];
+        for (var k = 0; k < tr.clips.numItems; k++) {
+            var a = Math.max(s, tr.clips[k].start.seconds), b = Math.min(e, tr.clips[k].end.seconds);
+            if (b - a > SW_RANGE_EPS) return true;
+        }
+    }
+    return false;
+}
+
+// Le rouge sous ce clip stabilisé peut-il venir d'autre chose que son Warp ?
+function _bnAmbiguous(seq, c) {
+    if (c.nest) return _nestPending(_findSequenceByName(c.nest), c.clip) !== true;
+    if (_userEffects(c.clip).length > 0) return true; // matchName inconnu = prudence
+    return _stacked(seq, c.t, c.clip.start.seconds, c.clip.end.seconds);
+}
+
 // Relance l'analyse du clip de r (2 fois au plus). Renvoie le message à logguer.
 function _bnRelaunch(seq, r) {
     if (r.tries >= SW_BANNER_MAX_TRIES) {
@@ -1014,11 +1035,13 @@ function SW_bannerNext(dir, sep) {
             if ((fk && now - fk < SW_GRACE_MS) || now - r.at < SW_GRACE_MS) continue; // analyse qui démarre
             if (_redShare(red, r.start, r.end) < 0.5) { r.state = "ok"; continue; }
             // rouge : pour un nest, sa propre barre dit si c'est le Warp ou le ralenti
-            // nest : le flux optique du ralenti rend aussi le montage rouge, et la barre d'un
-            // nest fermé n'est pas fiable (test du 2026-10-06 : « propre » malgré le
-            // bandeau). Sauf confirmation par sa barre, une capture tranche avant de relancer.
-            if (c.nest && r.state !== "relaunched" &&
-                _nestPending(_findSequenceByName(c.nest), c.clip) !== true) { if (!confirm) confirm = c.key; continue; }
+            // Le rouge vient-il forcément du Warp ? Oui pour un clip stabilisé seul (aucun
+            // autre effet, rien d'autre sur la même période). Sinon c'est ambigu et une
+            // capture tranche avant de relancer : autre effet lourd sur le clip (Neat
+            // Video…), clip lourd superposé sur une autre piste (la barre est par période,
+            // pas par piste), ou nest (le flux optique du ralenti rend aussi le montage
+            // rouge, et la barre d'un nest fermé n'est pas fiable : test du 2026-10-06).
+            if (r.state !== "relaunched" && _bnAmbiguous(seq, c)) { if (!confirm) confirm = c.key; continue; }
             if (r.state === "relaunched") { if (!confirm) confirm = c.key; continue; } // rouge malgré la ré-analyse
             if (launched >= SW_BATCH) continue;
             var m = _bnRelaunch(seq, r);

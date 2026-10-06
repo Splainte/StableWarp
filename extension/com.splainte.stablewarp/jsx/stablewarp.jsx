@@ -783,8 +783,8 @@ function SW_env() {
 //   1. une analyse tourne → on attend (la barre est rouge pendant l'analyse)
 //   2. rien ne tourne → tout clip stabilisé sous du rouge a un bandeau → relance
 //      (SW_BATCH au plus à la fois : Premiere plante au-delà de ~5 analyses)
-//   3. nest (ralenti) : le flux optique rend aussi la barre rouge → on lit la barre de
-//      rendu du nest lui-même, qui ne contient que les segments Warp
+//   3. nest (ralenti) : le flux optique rend aussi la barre rouge, et la barre d'un nest
+//      fermé n'est pas fiable → une capture d'image confirme le bandeau avant la relance
 //   4. encore rouge APRÈS la ré-analyse (autre effet lourd, Neat Video…) → une capture
 //      d'image tranche : bandeau → nouvelle relance ; pas de bandeau → on laisse
 // Un clip modifié change de clé (piste + nom + position + portion de rush) et repart
@@ -969,6 +969,7 @@ function _bnRelaunch(seq, r) {
     r.tries++;
     r.at = _now();
     r.state = "relaunched";
+    _bnState(seq).lastLaunch = r.at;
     _activate(seq);
     return r.name + " : bandeau bleu détecté → " + (ok ? "analyse relancée" : "ECHEC relance : " + rr);
 }
@@ -1013,13 +1014,16 @@ function SW_bannerNext(dir, sep) {
             if ((fk && now - fk < SW_GRACE_MS) || now - r.at < SW_GRACE_MS) continue; // analyse qui démarre
             if (_redShare(red, r.start, r.end) < 0.5) { r.state = "ok"; continue; }
             // rouge : pour un nest, sa propre barre dit si c'est le Warp ou le ralenti
-            if (c.nest && _nestPending(_findSequenceByName(c.nest), c.clip) === false) { r.state = "ok"; continue; }
+            // nest : le flux optique du ralenti rend aussi le montage rouge, et la barre d'un
+            // nest fermé n'est pas fiable (test du 2026-10-06 : « propre » malgré le
+            // bandeau). Sauf confirmation par sa barre, une capture tranche avant de relancer.
+            if (c.nest && r.state !== "relaunched" &&
+                _nestPending(_findSequenceByName(c.nest), c.clip) !== true) { if (!confirm) confirm = c.key; continue; }
             if (r.state === "relaunched") { if (!confirm) confirm = c.key; continue; } // rouge malgré la ré-analyse
             if (launched >= SW_BATCH) continue;
             var m = _bnRelaunch(seq, r);
             if (m) msgs.push(m);
             launched++;
-            g.lastLaunch = now;
         }
         g.recs = recs; // les clips disparus sont oubliés
 
@@ -1302,22 +1306,34 @@ function _warpComp(item) {
 }
 
 // Relance l'analyse d'un segment V2 d'un nest : retire le Warp (segment = Warp seul)
-// puis le repose via QE (l'ajout redéclenche l'analyse). "" si OK, message sinon.
+// puis le repose via QE (l'ajout redéclenche l'analyse). Le retrait est vérifié avant la
+// repose : jamais deux Warp empilés (double stabilisation). "" si OK, message sinon.
 function _reanalyzeNestSegment(stabSeq, segIdx) {
     if (!_activate(stabSeq)) return "activation de " + stabSeq.name + " impossible";
-    app.enableQE();
-    var qeSeq = qe.project.getActiveSequence();
-    if (!qeSeq || qeSeq.name !== stabSeq.name) return "séquence " + stabSeq.name + " introuvable côté QE";
-    var qeTrack = qeSeq.getVideoTrackAt(1);
-    var rank = -1;
-    for (var j = 0; j < qeTrack.numItems; j++) {
-        var qi = qeTrack.getItemAt(j);
-        if (!qi || qi.type === "Empty") continue;
-        rank++;
-        if (rank !== segIdx) continue;
-        try { qi.removeEffects(0, 0, true, false, false); } catch (e) {}
-        break;
+    function seg() { try { return stabSeq.videoTracks[1].clips[segIdx]; } catch (e) { return null; } }
+    if (!seg()) return "segment #" + segIdx + " introuvable";
+    // 1) retrait ciblé par le DOM
+    try {
+        var s0 = seg();
+        for (var c = s0.components.numItems - 1; c >= 0; c--) {
+            if (s0.components[c].matchName === SW_WARP_MATCHNAME) { try { s0.components[c].remove(); } catch (eR) {} }
+        }
+    } catch (eC) {}
+    // 2) repli QE (le segment ne porte que le Warp)
+    if (_hasWarp(seg())) {
+        app.enableQE();
+        var qeSeq = qe.project.getActiveSequence();
+        if (!qeSeq || qeSeq.name !== stabSeq.name) return "séquence " + stabSeq.name + " introuvable côté QE";
+        var qeTrack = qeSeq.getVideoTrackAt(1), rank = -1;
+        for (var j = 0; j < qeTrack.numItems; j++) {
+            var qi = qeTrack.getItemAt(j);
+            if (!qi || qi.type === "Empty") continue;
+            if (++rank !== segIdx) continue;
+            try { qi.removeEffects(0, 0, true, false, false); } catch (e1) {}
+            if (_hasWarp(seg())) { try { qi.removeEffects(); } catch (e2) {} }
+            break;
+        }
     }
+    if (_hasWarp(seg())) return "impossible de retirer l'ancien Warp du segment #" + segIdx;
     return _applyWarpToClipAt(stabSeq, 1, segIdx);
 }
-

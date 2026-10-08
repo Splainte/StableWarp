@@ -69,6 +69,38 @@ nests `_stab` dont le in/out déborde de la plage couverte par le clip intérieu
 Limitation assumée : le watcher ne tourne que si le panneau est ouvert (même contrainte que
 Sauron). Panneau fermé → la partie étendue reste non stabilisée (image V1) jusqu'à réouverture.
 
+## Détecteur de bandeau bleu (v1.1.3)
+
+Le bandeau « Cliquez sur Analyser » apparaît quand l'analyse du Warp ne couvre plus ce que le
+clip affiche. Aucune propriété lisible du Warp ne le dit, et `isDoneAnalyzingForVideoEffects`
+ne voit que les analyses en cours. Mesures du banc de test (Premiere 26.5, 2026-10-08) :
+
+| Situation | Message du bandeau | Barre de rendu | Signal utilisé |
+|---|---|---|---|
+| Trim qui ajoute des images, Warp jamais analysé (préréglage) | « Image non analysée… » sur les images ajoutées | **jaune** | portion analysée lue dans l'instantané |
+| Analyse invalidée (réouverture d'un vieux projet, réglage) | « De nouvelles images doivent être analysées » sur tout le clip | **rouge** | barre rouge |
+| Warp analysé (même 4K 10 bits) | — | jaune | — |
+| Autre effet lourd (Echo, flou de mouvement…) ou ralenti (nest) | — | rouge | fausse alerte à écarter |
+
+- **Instantané** : `Sequence.exportAsProject` écrit en quelques ms un .prproj de la séquence et
+  de ses nests. Chaque Warp y porte un bloc `PremiereFilterPrivateData` (base64 → 24 octets
+  d'en-tête → zlib → `Stab` + en-tête + JSON UTF-16) : `StartTime`/`Duration` = portion du rush
+  analysée (secondes), 0 image + `SourceID` nul = jamais analysé. Comparée à
+  `InPoint`/`OutPoint` du clip (`js/warpsnap.js`, côté panneau). Les Warp aux données identiques
+  (clip coupé au Cutter) partagent un bloc via `BinaryHash`. Instantané pris quand l'empreinte
+  des clips stabilisés change, sinon toutes les 60 s.
+- **Barre rouge** sous un clip direct : une relance, puis plus rien si c'est encore rouge une fois
+  l'analyse finie ; aucune relance si StableWarp a lui-même analysé le clip dans la session.
+  Les barres ne sont calculées que pour les séquences affichées dans la timeline : un nest est
+  ouvert (`openSequence`) une fois par session pour lire la sienne.
+- **Relance sur place** : `setParamValue` QE sur « Analyse détaillée » (aller-retour) relance
+  l'analyse sans retirer le Warp → autres effets, ordre et réglages intacts. Le `setValue` du DOM
+  et la bascule d'« Analyse rapide » n'ont pas cet effet. Secours au 2e essai : retrait ciblé
+  (`remove()` du composant QE, qui n'enlève que le Warp) puis repose avec recopie des réglages.
+- Garde-fous : rien pendant la lecture/le scrub ni pendant une analyse (montage ou nests),
+  3 relances simultanées au plus (Premiere plante au-delà de ~5), 2 relances par clip.
+- Le journal du panneau est copié dans `%TEMP%\stablewarp-panel.log` (support).
+
 ## Risques techniques — tous VALIDÉS par le spike (Premiere 26.2.2, 2026-06-12)
 
 | # | Point | Solution validée |

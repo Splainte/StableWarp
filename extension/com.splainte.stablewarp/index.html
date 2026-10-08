@@ -13,10 +13,10 @@
              background:#2d6cdf; color:#fff; border:none; border-radius:6px; cursor:pointer; }
   #stabBtn:hover { background:#3b7af0; }
   #stabBtn:disabled { background:#444; color:#999; cursor:default; }
-  #unstabBtn { display:block; width:100%; margin-top:8px; padding:7px; font-size:11px;
+  #unstabBtn, #reanBtn { display:block; width:100%; margin-top:8px; padding:7px; font-size:11px;
                background:transparent; color:#999; border:1px solid #4a4a4a;
                border-radius:6px; cursor:pointer; }
-  #unstabBtn:hover { color:#ddd; border-color:#666; }
+  #unstabBtn:hover, #reanBtn:hover { color:#ddd; border-color:#666; }
   .row { display:flex; align-items:center; gap:8px; margin-top:12px; }
   .row label { color:#aaa; flex:1; }
   input[type="checkbox"] { accent-color:#2d6cdf; }
@@ -42,6 +42,7 @@
 
   <button id="stabBtn" onclick="stabilize()">Stabiliser la sélection</button>
   <button id="unstabBtn" onclick="unstabilize()">Dé-stabiliser (restaurer le rush d'origine)</button>
+  <button id="reanBtn" onclick="reanalyze()">Relancer l'analyse de la sélection</button>
 
   <div class="row">
     <label for="watch">Re-stab auto si les in/out bougent (recommandé)</label>
@@ -62,8 +63,9 @@
     <button id="updateBtn" onclick="checkUpdate()">Vérifier les mises à jour</button>
   </div>
 
+<script src="./js/warpsnap.js"></script>
 <script>
-  var SW_VERSION = '1.1.2';
+  var SW_VERSION = '1.1.3';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -85,6 +87,18 @@
     }
     while (logEl.childNodes.length > 300) logEl.removeChild(logEl.firstChild);
     logEl.scrollTop = logEl.scrollHeight;
+    logToFile(lines);
+  }
+
+  // copie du log dans %TEMP%\stablewarp-panel.log (support), plafonnée à ~200 Ko
+  function logToFile(lines) {
+    try {
+      var fs = require('fs'), path = require('path'), os = require('os');
+      var f = path.join(os.tmpdir(), 'stablewarp-panel.log');
+      try { if (fs.statSync(f).size > 200000) fs.renameSync(f, f + '.1'); } catch (e0) {}
+      var ts = new Date().toISOString().replace('T', ' ').substr(0, 19);
+      fs.appendFileSync(f, lines.map(function (l) { return ts + ' ' + l; }).join('\n') + '\n');
+    } catch (e) {}
   }
 
   function evalJSX(call, cb) {
@@ -116,13 +130,61 @@
     });
   }
 
+  function reanalyze() {
+    if (busy) return;
+    busy = true;
+    log('▶ Relance de l’analyse de la sélection', 'info');
+    evalJSX('SW_reanalyzeSelection()', function (res) {
+      log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
+      busy = false;
+    });
+  }
+
   function watchTick() {
     if (busy) return;
-    var restab = document.getElementById('watch').checked ? 1 : 0;
-    var banner = document.getElementById('banner').checked ? 1 : 0;
-    if (!restab && !banner) return;
-    evalJSX('SW_watchTick(' + restab + ', ' + banner + ')', function (res) {
-      if (res && res !== 'EvalScript error.') log(res); // ECHEC en rouge ligne par ligne
+    if (document.getElementById('watch').checked) {
+      evalJSX('SW_watchTick()', function (res) {
+        if (res && res !== 'EvalScript error.') log(res); // ECHEC en rouge ligne par ligne
+      });
+    }
+    if (document.getElementById('banner').checked) bannerTick();
+  }
+
+  // ---- détecteur de bandeau bleu ----
+  // Le JSX surveille la barre de rendu et écrit, quand quelque chose a changé, un
+  // instantané de la séquence (exportAsProject). Ici on y lit les données d'analyse de
+  // chaque Warp (js/warpsnap.js) et on renvoie au JSX ceux dont l'analyse ne couvre pas
+  // la portion de rush utilisée. Aucune image n'est analysée.
+
+  var bannerJob = false;
+
+  function bannerTick() {
+    if (bannerJob) return;
+    var os = require('os'), path = require('path'), fs = require('fs');
+    var dir = path.join(os.tmpdir(), 'stablewarp');
+    try { if (!fs.existsSync(dir)) fs.mkdirSync(dir); } catch (e) { return; }
+    var snap = path.join(dir, 'instantane.prproj');
+    bannerJob = true;
+    evalJSX('SW_bannerNext(' + JSON.stringify(snap) + ')', function (res) {
+      if (!res || res === 'EvalScript error.') { bannerJob = false; return; }
+      var lines = String(res).split('\n'), file = null;
+      for (var i = 0; i < lines.length; i++) {
+        if (lines[i].indexOf('SNAP|') === 0) file = lines[i].substr(5);
+        else if (lines[i]) log(lines[i]);
+      }
+      if (!file) { bannerJob = false; return; }
+      var todo = [];
+      try {
+        var warps = SWWarpSnap.parse(fs.readFileSync(file));
+        for (var j = 0; j < warps.length; j++) {
+          if (warps[j].covered === false) todo.push(warps[j].seq + '\t' + warps[j].track + '\t' + warps[j].start);
+        }
+      } catch (e) { log('détecteur bandeau : instantané illisible (' + e + ')', 'dim'); }
+      try { fs.unlinkSync(file); } catch (e2) {}
+      evalJSX('SW_bannerApply(' + JSON.stringify(todo.join('\n')) + ')', function (msg) {
+        if (msg && msg !== 'EvalScript error.') log(msg);
+        bannerJob = false;
+      });
     });
   }
 

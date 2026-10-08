@@ -392,9 +392,11 @@ function _userEffects(item) {
 }
 
 // Retire le Warp posé directement sur un clip de montage. "" si OK, message sinon.
-// 1) component.remove() ciblé (sans risque pour les autres effets) ;
-// 2) QE removeEffects, uniquement si le clip n'a AUCUN autre effet utilisateur
-//    (sémantique incertaine — on ne risque pas un Lumetri) ; sonde sinon.
+// 1) component.remove() ciblé du DOM (absent de Premiere 26.5) ;
+// 2) remove() ciblé du composant QE : n'enlève QUE le Warp (banc de test du 2026-10-08,
+//    Echo/Lumetri intacts) ;
+// 3) QE removeEffects, uniquement si le clip n'a AUCUN autre effet utilisateur
+//    (enlève tous les effets — on ne risque pas un Lumetri) ; sonde sinon.
 function _removeWarpDirect(item, montageSeq, trackIdx) {
     var compProbe = [];
     try {
@@ -412,6 +414,16 @@ function _removeWarpDirect(item, montageSeq, trackIdx) {
             if (!_hasWarp(item)) return "";
         }
     } catch (e0) {}
+
+    try {
+        _activate(montageSeq);
+        var qi0 = _qeItemOf(montageSeq, trackIdx, item);
+        for (var q = qi0 ? qi0.numComponents - 1 : -1; q >= 0; q--) {
+            var qc = qi0.getComponentAt(q);
+            if (qc && qc.matchName === SW_WARP_MATCHNAME) qc.remove();
+        }
+        if (qi0 && !_hasWarp(item)) return "";
+    } catch (eQ) {}
 
     var others = _userEffects(item);
     if (others.length > 0) {
@@ -854,10 +866,58 @@ function _restoreWarpSettings(comp, snap) {
     } catch (e) {}
 }
 
-// Relance l'analyse d'un Warp direct : retrait puis repose (l'ajout redéclenche
-// l'analyse ; basculer un réglage d'analyse l'invalide sans la relancer), en recopiant
-// les réglages du monteur. "" si OK, message sinon.
-function _relaunchDirect(item, montageSeq, trackIdx) {
+// Item QE d'un clip DOM de la séquence ACTIVE (k-ième clip DOM = k-ième item non vide).
+function _qeItemOf(seq, trackIdx, item) {
+    app.enableQE();
+    var qs = qe.project.getActiveSequence();
+    if (!qs || qs.guid !== seq.sequenceID) return null;
+    var b = _trackBounds(seq, trackIdx);
+    for (var t = b.from; t < b.to; t++) {
+        var tr = seq.videoTracks[t];
+        for (var k = 0; k < tr.clips.numItems; k++) {
+            var c = tr.clips[k];
+            if (c.name !== item.name || !_near(c.start.seconds, item.start.seconds)) continue;
+            var qt = qs.getVideoTrackAt(t), rank = -1;
+            for (var j = 0; j < qt.numItems; j++) {
+                var qi = qt.getItemAt(j);
+                if (!qi || qi.type === "Empty") continue;
+                if (++rank === k) return qi;
+            }
+        }
+    }
+    return null;
+}
+
+// Relance l'analyse SUR PLACE : bascule « Analyse détaillée » par l'API QE puis la remet
+// à sa valeur. Contrairement au modèle DOM (setValue), le setParamValue QE suit le même
+// chemin que l'interface et relance l'analyse ; le Warp n'est ni retiré ni déplacé, les
+// autres effets (Lumetri…), leur ordre et les réglages restent intacts (banc de test du
+// 2026-10-08). La séquence du clip doit être active. "" si OK, message sinon.
+function _relaunchInPlace(qi) {
+    if (!qi) return "clip introuvable côté QE";
+    var qc = null;
+    for (var i = 0; i < qi.numComponents; i++) {
+        var c = qi.getComponentAt(i);
+        if (c && c.matchName === SW_WARP_MATCHNAME) { qc = c; break; }
+    }
+    if (!qc) return "Warp introuvable côté QE";
+    try {
+        var nm = qc.getParamList()[17]; // « Analyse détaillée » (nom traduit, indice stable)
+        var v = String(qc.getParamValue(nm, ""));
+        if (v !== "true" && v !== "false") return "réglage « Analyse détaillée » introuvable";
+        qc.setParamValue(nm, v === "true" ? "false" : "true", "");
+        qc.setParamValue(nm, v, "");
+        return "";
+    } catch (e) { return "relance sur place : " + e; }
+}
+
+// Relance l'analyse d'un Warp direct : sur place d'abord ; en secours (hard, ou échec),
+// retrait puis repose du Warp en recopiant les réglages du monteur. "" si OK, message sinon.
+function _relaunchDirect(item, montageSeq, trackIdx, hard) {
+    if (!hard) {
+        _activate(montageSeq);
+        if (_relaunchInPlace(_qeItemOf(montageSeq, trackIdx, item)) === "") { _markFresh(item); return ""; }
+    }
     var snap = _snapWarpSettings(_warpComp(item));
     var rm = _removeWarpDirect(item, montageSeq, trackIdx);
     if (rm !== "") return rm;
@@ -1059,11 +1119,13 @@ function _bnRedPass(seq, g, list) {
         var s = c.clip.start.seconds, e = c.clip.end.seconds;
         if (_redShare(red, s, e) < 0.5) { r.state = "ok"; continue; }
         if (c.nest) { nestsToCheck[c.nest] = 1; continue; }
-        // encore rouge alors que la relance a abouti : le rouge ne vient pas du Warp
-        if (r.state === "relaunched") { r.state = "other"; continue; }
+        // rouge alors que StableWarp a lui-même analysé ce clip cette session (analyse
+        // finie, puisque rien ne tourne) : l'analyse est valide, le rouge vient d'autre
+        // chose (autre effet lourd, clip superposé) → on n'y touche pas
+        if (fk || r.state === "relaunched") { r.state = "other"; continue; }
         if (launched >= SW_BATCH) continue;
         if (r.tries >= SW_BANNER_MAX_TRIES) { r.state = "gaveup"; continue; }
-        var rr = _relaunchDirect(c.clip, seq, c.t);
+        var rr = _relaunchDirect(c.clip, seq, c.t, r.tries >= 1);
         r.tries++; r.at = now; r.state = "relaunched"; launched++;
         g.lastLaunch = now;
         msgs.push(c.clip.name + " : analyse à refaire (barre rouge" +
@@ -1089,10 +1151,12 @@ function _bnRedPass(seq, g, list) {
 function _bnCheckNest(montage, name) {
     var ns = _findSequenceByName(name);
     if (!ns || ns.videoTracks.numTracks < 2) return "";
-    if (!_activate(ns)) return "";
+    // ouvrir (pas seulement activer) : Premiere ne calcule la barre de rendu que des
+    // séquences affichées dans la timeline (banc de test du 2026-10-08)
+    try { app.project.openSequence(ns.sequenceID); } catch (eO) { if (!_activate(ns)) return ""; }
     var msg = "";
     try {
-        $.sleep(500); // le temps que la barre de rendu soit calculée
+        $.sleep(800); // le temps que la barre de rendu soit calculée
         var q = _qeSeqOf(ns), red = q ? _redRanges(q) : [], v2 = ns.videoTracks[1], done = [];
         for (var k = 0; k < v2.clips.numItems; k++) {
             var seg = v2.clips[k];
@@ -1147,7 +1211,7 @@ function SW_bannerApply(lines) {
                 try { rev = !!clip.isSpeedReversed(); } catch (eR) {}
                 if (Math.abs(spd - 1) > 0.0001 || rev) continue; // la migration vers nest s'en charge
                 label = clip.name;
-                rr = _relaunchDirect(clip, seq, t);
+                rr = _relaunchDirect(clip, seq, t, tries >= 1);
             } else if (_isStabName(sname)) {
                 var ns = _findSequenceByName(sname);
                 if (!ns) continue;
@@ -1158,7 +1222,7 @@ function SW_bannerApply(lines) {
                 } catch (eI) {}
                 if (idx < 0) continue;
                 label = sname + " #" + idx;
-                rr = _reanalyzeNestSegment(ns, idx);
+                rr = _reanalyzeNestSegment(ns, idx, tries >= 1);
                 nestsTouched[sname] = ns;
             } else continue;
             g.cov[key] = tries + 1;
@@ -1224,187 +1288,6 @@ function SW_reanalyzeSelection() {
     return results.join("\n");
 }
 
-// ---------- diagnostic bandeau bleu (LECTURE SEULE, ne modifie rien) ----------
-
-// Représentation lisible d'une valeur de propriété (booléens/nombres/chaînes/objets).
-function _diagVal(v) {
-    try {
-        if (v === true) return "true";
-        if (v === false) return "false";
-        if (v === null) return "null";
-        if (v === undefined) return "undefined";
-        if (typeof v === "number") return String(v);
-        if (typeof v === "string") return '"' + v + '"';
-        return String(v);
-    } catch (e) { return "?"; }
-}
-
-// Vidange complète du Warp d'un clip : matchName, toutes ses propriétés (nom + valeur)
-// et le verdict de l'heuristique actuelle. Sert à identifier quel signal distingue
-// vraiment le bandeau bleu (« Analyser ») d'un clip déjà analysé.
-function _diagWarpComp(item, trackIdx) {
-    var out = [];
-    out.push("=== " + item.name + " (V" + (trackIdx + 1) +
-             ", début " + item.start.seconds.toFixed(2) + "s) ===");
-    var wc = null, wcIdx = -1;
-    try {
-        for (var c = 0; c < item.components.numItems; c++) {
-            if (item.components[c].matchName === SW_WARP_MATCHNAME) { wc = item.components[c]; wcIdx = c; break; }
-        }
-    } catch (e0) {}
-    if (!wc) { out.push("  (pas d'effet Stabilisation sur ce clip)"); return out.join("\n"); }
-    out.push("  composant[" + wcIdx + "] matchName=" + wc.matchName);
-    var props = null;
-    try { props = wc.properties; } catch (eP) { out.push("  properties illisibles : " + eP); return out.join("\n"); }
-    var n = 0;
-    try { n = props.numItems; } catch (eN) {}
-    out.push("  " + n + " propriété(s) :");
-    var max = n < 60 ? n : 60;
-    for (var i = 0; i < max; i++) {
-        var nm = "?", val = "?";
-        try { nm = props[i].displayName; } catch (eNm) {}
-        try { val = _diagVal(props[i].getValue()); } catch (eV) { val = "getValue ECHEC (" + eV + ")"; }
-        out.push("    [" + i + "] " + nm + " = " + val);
-    }
-    return out.join("\n");
-}
-
-// TEST : exporte une image (milieu du clip) de chaque clip vidéo sélectionné, pour
-// vérifier si le bandeau bleu du Warp est dessiné dans l'image rendue. Lecture seule.
-// Renvoie une ligne "FILE|<chemin sans extension>|<libellé>" par image demandée, plus
-// la liste des méthodes QE du premier clip (pistes d'exploration).
-function SW_captureSelected(dir, sep) {
-    if (!app.project) return "ECHEC aucun projet ouvert";
-    var seq = app.project.activeSequence;
-    if (!seq) return "ECHEC aucune séquence active";
-    var picks = _selectedVideoPicks(seq);
-    if (!picks.length) return "ECHEC sélectionne au moins un clip vidéo";
-    app.enableQE();
-    var qeSeq = qe.project.getActiveSequence();
-    if (!qeSeq) return "ECHEC séquence introuvable côté QE";
-    var st = seq.getSettings();
-    var out = [];
-    for (var i = 0; i < picks.length && i < 4; i++) {
-        var it = picks[i].item;
-        var tc = _t((it.start.seconds + it.end.seconds) / 2).getFormatted(st.videoFrameRate, st.videoDisplayFormat);
-        var base = dir + sep + "stablewarp-capture-" + (i + 1) + "-" + it.name.replace(/[^\w.-]/g, "_");
-        try {
-            qeSeq.exportFramePNG(tc, base);
-            out.push("FILE|" + base + "|" + it.name + " à " + tc + (_warpComp(it) ? " (Warp)" : " (sans Warp)"));
-        } catch (e) { out.push("ECHEC export " + it.name + " : " + e); }
-    }
-    try {
-        var t0 = picks[0].trackIdx >= 0 ? picks[0].trackIdx : 0;
-        var tr = seq.videoTracks[t0], k0 = -1;
-        for (var k = 0; k < tr.clips.numItems; k++) {
-            if (tr.clips[k].name === picks[0].item.name &&
-                _near(tr.clips[k].start.seconds, picks[0].item.start.seconds)) { k0 = k; break; }
-        }
-        var qeTrack = qeSeq.getVideoTrackAt(t0), rank = -1;
-        for (var j = 0; j < qeTrack.numItems && k0 >= 0; j++) {
-            var qi = qeTrack.getItemAt(j);
-            if (!qi || qi.type === "Empty") continue;
-            if (++rank !== k0) continue;
-            var ms = qi.reflect.methods, names = [];
-            for (var m = 0; m < ms.length; m++) names.push(String(ms[m].name));
-            out.push("Méthodes QE du clip : " + names.join(", "));
-            break;
-        }
-    } catch (eQ) { out.push("(méthodes QE illisibles : " + eQ + ")"); }
-    return out.join("\n");
-}
-
-// TEST : que renvoie Sequence.isDoneAnalyzingForVideoEffects() (API officielle, à
-// l'échelle de la séquence) selon qu'il y a un bandeau en attente, une analyse en
-// cours ou rien ? Pour la séquence active et chaque nest _stab, plus les méthodes
-// DOM/QE de la séquence (pistes d'exploration). Lecture seule.
-function SW_testAnalysisApi() {
-    if (!app.project) return "ECHEC aucun projet ouvert";
-    var seq = app.project.activeSequence;
-    if (!seq) return "ECHEC aucune séquence active";
-    function st(s) {
-        try { return s.isDoneAnalyzingForVideoEffects() ? "terminé (true)" : "PAS terminé (false)"; }
-        catch (e) { return "erreur : " + e; }
-    }
-    var out = ["isDoneAnalyzingForVideoEffects :", "  séquence active « " + seq.name + " » → " + st(seq)];
-    for (var i = 0; i < app.project.sequences.numSequences; i++) {
-        var s = app.project.sequences[i];
-        if (_isStabName(s.name)) out.push("  nest « " + s.name + " » → " + st(s));
-    }
-    function names(o) {
-        var r = [];
-        try { var ms = o.reflect.methods; for (var m = 0; m < ms.length; m++) r.push(String(ms[m].name)); }
-        catch (e) { return "illisible : " + e; }
-        return r.join(", ");
-    }
-    // valeur brute lisible, quel que soit le type renvoyé par QE
-    function dump(v, depth) {
-        if (v === null || v === undefined) return String(v);
-        if (typeof v !== "object") return String(v);
-        if (typeof v.length === "number") {
-            var a = [];
-            for (var k = 0; k < v.length && k < 40; k++) a.push(dump(v[k], depth + 1));
-            return "[" + a.join(", ") + (v.length > 40 ? ", … (" + v.length + ")" : "") + "]";
-        }
-        if (depth > 1) return String(v);
-        var p = [];
-        try {
-            var ps = v.reflect.properties;
-            for (var q = 0; q < ps.length; q++) {
-                var n = String(ps[q].name);
-                if (n === "__proto__" || n === "reflect") continue;
-                try { p.push(n + "=" + dump(v[n], depth + 1)); } catch (eP) {}
-            }
-        } catch (eR) { return String(v); }
-        return "{" + p.join(" ") + "}";
-    }
-    try {
-        app.enableQE();
-        var qs = qe.project.getActiveSequence();
-        var calls = ["isIncompleteBackgroundVideoEffects", "getRedBarTimes", "getYellowBarTimes",
-                     "getGreenBarTimes", "getEmptyBarTimes"];
-        out.push("Fonctions QE de la séquence active :");
-        for (var c = 0; c < calls.length; c++) {
-            try { out.push("  " + calls[c] + "() → " + dump(qs[calls[c]](), 0)); }
-            catch (eC) { out.push("  " + calls[c] + "() → erreur : " + eC); }
-        }
-    } catch (eQ) { out.push("QE indisponible : " + eQ); }
-    out.push("Clips stabilisés (piste, nom, début → fin en s) :");
-    for (var t = 0; t < seq.videoTracks.numTracks; t++) {
-        var tr = seq.videoTracks[t];
-        for (var j = 0; j < tr.clips.numItems; j++) {
-            var cl = tr.clips[j], pi = null;
-            try { pi = cl.projectItem; } catch (eI) {}
-            var nest = pi && _isStabName(pi.name);
-            if (!nest && !_warpComp(cl)) continue;
-            out.push("  V" + (t + 1) + " " + cl.name + " : " + cl.start.seconds.toFixed(2) + " → " +
-                cl.end.seconds.toFixed(2) + (nest ? " (nest)" : ""));
-        }
-    }
-    return out.join("\n");
-}
-
-// API panneau : diagnostic des clips vidéo sélectionnés (rien n'est modifié).
-function SW_diagWarp() {
-    if (!app.project) return "ECHEC aucun projet ouvert";
-    var seq = app.project.activeSequence;
-    if (!seq) return "ECHEC aucune séquence active";
-    var picks = [];
-    try {
-        for (var t = 0; t < seq.videoTracks.numTracks; t++) {
-            var tr = seq.videoTracks[t];
-            for (var k = 0; k < tr.clips.numItems; k++) {
-                var clip = tr.clips[k];
-                if (clip.mediaType === "Video" && clip.isSelected()) picks.push({ item: clip, t: t });
-            }
-        }
-    } catch (eS) {}
-    if (!picks.length) return "Diagnostic : sélectionne d'abord le(s) clip(s) qui affiche(nt) le bandeau bleu, puis relance.";
-    var res = ["StableWarp — diagnostic bandeau — " + SW_env()];
-    for (var p = 0; p < picks.length; p++) res.push(_diagWarpComp(picks[p].item, picks[p].t));
-    return res.join("\n\n");
-}
-
 // ---------- helpers de détection de l'état d'analyse du Warp ----------
 
 // Le Warp du clip (ou null).
@@ -1417,13 +1300,15 @@ function _warpComp(item) {
     return null;
 }
 
-// Relance l'analyse d'un segment V2 d'un nest : retire le Warp (segment = Warp seul)
-// puis le repose via QE (l'ajout redéclenche l'analyse). Le retrait est vérifié avant la
-// repose : jamais deux Warp empilés (double stabilisation). "" si OK, message sinon.
-function _reanalyzeNestSegment(stabSeq, segIdx) {
+// Relance l'analyse d'un segment V2 d'un nest : sur place d'abord (_relaunchInPlace) ;
+// en secours (hard, ou échec), retire le Warp (segment = Warp seul) puis le repose via
+// QE. Le retrait est vérifié avant la repose : jamais deux Warp empilés (double
+// stabilisation). "" si OK, message sinon.
+function _reanalyzeNestSegment(stabSeq, segIdx, hard) {
     if (!_activate(stabSeq)) return "activation de " + stabSeq.name + " impossible";
     function seg() { try { return stabSeq.videoTracks[1].clips[segIdx]; } catch (e) { return null; } }
     if (!seg()) return "segment #" + segIdx + " introuvable";
+    if (!hard && _relaunchInPlace(_qeItemOf(stabSeq, 1, seg())) === "") return "";
     // 1) retrait ciblé par le DOM
     try {
         var s0 = seg();

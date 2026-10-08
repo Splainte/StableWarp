@@ -48,6 +48,11 @@ Compatibilité : Premiere Pro 2020 (14.0) et versions ultérieures.
 Le bouton **Dé-stabiliser** restaure le rush d'origine (vitesse et position conservées) et
 nettoie le nest `_stab` s'il n'est plus utilisé ailleurs.
 
+Le **détecteur de bandeau bleu** repère tout seul les clips stabilisés dont l'analyse ne
+couvre plus l'image (après un trim, à la réouverture d'un vieux projet, Warp posé avec un
+préréglage…) et relance leur analyse sans toucher aux autres effets ni aux réglages. Le
+bouton **Relancer l'analyse de la sélection** fait la même chose à la demande.
+
 Les sous-éléments techniques (`<rush>_stab_zone`) sont rangés dans un chutier racine
 `_StableWarp` ; les onglets des séquences `_stab` se referment automatiquement.
 

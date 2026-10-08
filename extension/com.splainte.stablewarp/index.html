@@ -17,10 +17,6 @@
                background:transparent; color:#999; border:1px solid #4a4a4a;
                border-radius:6px; cursor:pointer; }
   #unstabBtn:hover, #reanBtn:hover { color:#ddd; border-color:#666; }
-  #diagBtn, #capBtn, #apiBtn { display:block; width:100%; margin-top:8px; padding:7px; font-size:11px;
-             background:transparent; color:#c8a24a; border:1px dashed #6a5a2a;
-             border-radius:6px; cursor:pointer; }
-  #diagBtn:hover, #capBtn:hover, #apiBtn:hover { color:#e0bc63; border-color:#8a7333; }
   .row { display:flex; align-items:center; gap:8px; margin-top:12px; }
   .row label { color:#aaa; flex:1; }
   input[type="checkbox"] { accent-color:#2d6cdf; }
@@ -47,9 +43,6 @@
   <button id="stabBtn" onclick="stabilize()">Stabiliser la sélection</button>
   <button id="unstabBtn" onclick="unstabilize()">Dé-stabiliser (restaurer le rush d'origine)</button>
   <button id="reanBtn" onclick="reanalyze()">Relancer l'analyse de la sélection</button>
-  <button id="diagBtn" onclick="diag()">🔬 Diagnostic bandeau (build test)</button>
-  <button id="capBtn" onclick="capture()">📷 Capture image (build test)</button>
-  <button id="apiBtn" onclick="testApi()">🧪 Test API analyse (build test)</button>
 
   <div class="row">
     <label for="watch">Re-stab auto si les in/out bougent (recommandé)</label>
@@ -72,7 +65,7 @@
 
 <script src="./js/warpsnap.js"></script>
 <script>
-  var SW_VERSION = '1.1.3-test8';
+  var SW_VERSION = '1.1.3';
   var SW_REPO = 'Splainte/StableWarp';
 
   var logEl = document.getElementById('log');
@@ -144,66 +137,6 @@
     evalJSX('SW_reanalyzeSelection()', function (res) {
       log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res);
       busy = false;
-    });
-  }
-
-  function testApi() {
-    if (busy) return;
-    log('▶ Test API analyse (lecture seule)', 'info');
-    evalJSX('SW_testAnalysisApi()', function (res) {
-      log(res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res, 'dim');
-    });
-  }
-
-  // TEST : exporte une image de chaque clip sélectionné sur le Bureau, puis vérifie
-  // quels fichiers ont été écrits (l'export peut être différé, et Premiere ajoute
-  // parfois lui-même l'extension .png)
-  function capture() {
-    if (busy) return;
-    var os = require('os'), path = require('path'), fs = require('fs');
-    var dir = path.join(os.homedir(), 'Desktop');
-    if (!fs.existsSync(dir)) dir = os.tmpdir();
-    log('▶ Capture image (lecture seule, ne modifie rien)', 'info');
-    evalJSX('SW_captureSelected(' + JSON.stringify(dir) + ', ' + JSON.stringify(path.sep) + ')', function (res) {
-      if (res === 'EvalScript error.') { log('ECHEC erreur ExtendScript'); return; }
-      var lines = String(res).split('\n'), files = [];
-      for (var i = 0; i < lines.length; i++) {
-        var p = lines[i].split('|');
-        if (p[0] === 'FILE') files.push({ base: p[1], label: p[2] });
-        else log(lines[i], 'dim');
-      }
-      setTimeout(function () {
-        for (var j = 0; j < files.length; j++) {
-          var f = files[j], found = null;
-          var cands = [f.base + '.png', f.base];
-          for (var c = 0; c < cands.length; c++) if (fs.existsSync(cands[c])) { found = cands[c]; break; }
-          log((found ? '📄 ' + found : 'ECHEC image non trouvée pour') + ' — ' + f.label, found ? 'info' : undefined);
-        }
-        if (files.length) log('Envoie ces images à Claude (une avec bandeau, une sans si possible).', 'info');
-      }, 3000);
-    });
-  }
-
-  // écrit le diagnostic dans un .txt facile à retrouver ; renvoie le chemin ou null
-  function _writeDiag(text) {
-    var os = require('os'), path = require('path'), fs = require('fs');
-    var targets = [path.join(os.homedir(), 'Desktop', 'stablewarp-diag.txt'),
-                   path.join(os.tmpdir(), 'stablewarp-diag.txt')];
-    for (var i = 0; i < targets.length; i++) {
-      try { fs.writeFileSync(targets[i], text, 'utf8'); return targets[i]; } catch (e) {}
-    }
-    return null;
-  }
-
-  function diag() {
-    if (busy) return;
-    log('▶ Diagnostic bandeau (lecture seule, ne modifie rien)', 'info');
-    evalJSX('SW_diagWarp()', function (res) {
-      var out = res === 'EvalScript error.' ? 'ECHEC erreur ExtendScript' : res;
-      log(out, 'dim');
-      var f = _writeDiag(out);
-      if (f) log('📄 Diagnostic enregistré : ' + f + ' — envoie ce fichier à Robin/Claude.', 'info');
-      else log('(fichier non écrit — copie le texte ci-dessus à la main)', 'dim');
     });
   }
 
